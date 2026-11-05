@@ -50,6 +50,29 @@ let resources config ~root ~environment ~kind ~target args =
     ([ "resource-inspect"; target; "--kind"; kind; "--json" ] @ args)
 ;;
 
+let workloads config ~root ~environment (query : Asic_workloads.Query.t) =
+  let target = function
+    | Asic_workloads.Target.Bundle path -> "bundle", path
+    | Coarse_run path -> "coarse_run", path
+    | Execution path -> "execution", path
+  in
+  let args =
+    match query with
+    | Inspect { result; _ } -> [ "workload-inspect"; result; "--json" ]
+    | Compare q ->
+      let lk, lp = target q.left and rk, rp = target q.right in
+      let axis = match q.axis with
+        | Hardware -> "hardware" | Resource_policy -> "resource_policy"
+        | Flow_configuration -> "flow_configuration" | Descriptive -> "descriptive"
+      in
+      [ "compare"; "--left-kind"; lk; "--left"; lp; "--right-kind"; rk
+      ; "--right"; rp; "--axis"; axis; "--json" ]
+      @ Option.value_map q.left_workload ~default:[] ~f:(fun p -> ["--left-workload";p])
+      @ Option.value_map q.right_workload ~default:[] ~f:(fun p -> ["--right-workload";p])
+  in
+  provider config ~root ~environment args
+;;
+
 let run_prepared config ~root ~environment ~(prepared : Asic.Fresh.Prepared.t) ~workspace =
   let resolved value suffix =
     Option.value value ~default:(Filename.concat config.Config.toolchain suffix)

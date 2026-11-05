@@ -1,0 +1,6 @@
+(executable
+ (name probe)
+ (modules probe)
+ (libraries async core core_unix yojson hardcaml_workbench_backend
+  hardcaml_workbench_protocol hardcaml_workbench_project_integration)
+ (preprocess (pps ppx_jane)))

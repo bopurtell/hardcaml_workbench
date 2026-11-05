@@ -45,6 +45,7 @@ type t =
   ; session : string
   ; active : string option
   ; workspaces : workspace list
+  ; workloads : (string * Workloads_view.saved) list
   }
 
 (** All operations raise on invalid data, following the other preference sidecars. IDs are
@@ -60,6 +61,7 @@ val create
   -> workspaces:workspace list
   -> t
 
+val with_workloads : t -> (string * Workloads_view.saved) list -> t
 val encode : t -> string
 val decode : project_key:string -> string -> t
 

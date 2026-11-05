@@ -1,5 +1,30 @@
 # Hardcaml Workbench — Demo construction plan
 
+## Active PT.8 workload inspection and execution — 2026-11-05
+
+User authorized the Workbench integration of the accepted PT.8 library/example
+workflow. [Bounded plan](pt8_workloads_plan.md) owns shared APIs, exclusive slices,
+isolated provider/session setup and acceptance. Existing configured sessions and
+live daemons remain unchanged.
+
+- [x] Public workload reader bridge and bounded async result/comparison cache.
+- [x] Workloads workspace: explicit result imports, A/B captures, axis and reasons.
+- [x] Example FS2 positive workload catalog, fresh execution and exact result handoff.
+- [x] Independent review, real retained/fresh HTTP/PTY acceptance and launch guide.
+
+No new synthesis/P&R/STA or Protemu scope. Provider-owned verification/deltas and
+existing FS2 supervision are reused; root configuration adoption is separate.
+
+Delivered 2026-11-05: [launch/acceptance guide](pt8_workloads.md). Corrected private
+session `session-final-review-01` runs immutable provider generation
+`ee3af8de9f83418b9afed9c67e473e3c`. Actual retained comparison and production-form
+fresh Exact launch, digest-pinned artifact handoff and fresh-versus-retained
+comparison pass; all seven workload metrics have zero deltas. Independent frontend
+review78 controls and backend correction61 observations pass after six findings
+were corrected. Full terminal and coordinator `@all @runtest` pass. Source/model/
+trace audit and root-provider/config preservation are recorded in the guide.
+Existing live sessions remain untouched; user visual acceptance is pending.
+
 ## Active PT.6 resource inspector — 2026-10-28
 
 Owner authorized presentation of ASIC-owned requested/selected/realized resources,

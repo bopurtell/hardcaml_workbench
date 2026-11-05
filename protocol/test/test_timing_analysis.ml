@@ -107,6 +107,7 @@ let%test_unit "supplementary analysis negotiates populated fields for strict old
     ; fresh_intent = None
     ; workflows = []
     ; resources = None
+    ; workloads = None
     }
   in
   let old_target = Asic_inspection.Analysis_target.sexp_of_t target in

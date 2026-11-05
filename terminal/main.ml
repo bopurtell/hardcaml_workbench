@@ -33,6 +33,7 @@ module Waveform_view = Terminal_presentation.Waveform_view
 module Waveform_preferences = Terminal_presentation.Waveform_preferences
 module Waveforms = Hardcaml_workbench_workspaces.Waveforms
 module Resources_view = Terminal_presentation.Resources_view
+module Workloads_view = Terminal_presentation.Workloads_view
 module Planned_run = Terminal_presentation.Planned_run
 module Stage_action = Terminal_presentation.Stage_action
 
@@ -1200,6 +1201,16 @@ let reconcile_synthesis session =
             session.asic
         in
         session.host <- Host.set_local session.host tile.id { local with resources });
+      if String.equal tile.kind "workloads"
+      then (
+        let local = Host.local session.host tile.id in
+        let workloads =
+          Workloads_view.reconcile
+            ~revision:session.asic_applied_id
+            local.workloads
+            session.asic
+        in
+        session.host <- Host.set_local session.host tile.id { local with workloads });
       if String.equal tile.kind "synthesis"
       then (
         let local = Host.local session.host tile.id in
@@ -4577,6 +4588,20 @@ let host_catalog_base session =
                 (Testing_accept tile.id)
             ]
           else [])
+       @ Option.value_map
+           (Host.testing session.host tile.id)
+           ~default:[]
+           ~f:(fun (_, _, state) ->
+             Option.value_map
+               (Testing_workspace.workload_artifact state)
+               ~default:[]
+               ~f:(fun artifact ->
+                 [ Host.command
+                     "workloads.inspect-result"
+                     "Inspect workload result (selected Testing case)"
+                     "PT8 retained result reference"
+                     (Host.Workload_reference (tile.id, artifact))
+                 ]))
        @ Option.value_map (Simulation_view.detail v) ~default:[] ~f:(fun d ->
          [ cmd "cancel" ("Cancel " ^ d.id) (Cancel d.id) ]
          @ Host.simulation_log_commands tile
@@ -4756,7 +4781,34 @@ let host_catalog session =
         Option.map f.Asic.Finalization.attempt ~f:(fun attempt ->
           select ("finalization " ^ attempt) (Finalization { run = f.run; attempt }))))
   in
-  Host.contextual session.host (host_catalog_base session @ resource_commands)
+  let workload_commands =
+    Workloads_view.results (Workloads_view.snapshot session.asic)
+    |> List.map ~f:(fun (result, _) ->
+      let view =
+        Option.value_map
+          (Host.focused session.host)
+          ~default:Workloads_view.empty
+          ~f:(fun tile -> (Host.local session.host tile.id).workloads)
+      in
+      let expected_digest =
+        match
+          Workloads_view.inspection_query
+            view
+            result
+            (Workloads_view.snapshot session.asic)
+        with
+        | Some (Inspect q) -> q.expected_digest
+        | _ -> None
+      in
+      Host.command
+        ("workloads.select." ^ Terminal_presentation.Plain_rpc.digest result)
+        ("Workloads: Select " ^ result)
+        "retained result source"
+        (Workload_result (result, expected_digest)))
+  in
+  Host.contextual
+    session.host
+    (host_catalog_base session @ resource_commands @ workload_commands)
 ;;
 
 let timing_prefetch_neighbors = ref 2
@@ -5307,12 +5359,13 @@ let inspection_step session tile view action =
    Capture client/project/session across that acknowledgement before touching local state. *)
 (** Wrappers must retain their live validator when lowering to a preparation action.
     Tile-local selection and provider capabilities can change without a registry edit. *)
-let resource_tile session ~current =
+let resource_tile ?(kind = "resources") session ~current =
+  let tile_kind = if String.equal kind "testing" then "simulation-catalog" else kind in
   let client = session.client in
   let instance = session.hello.instance_id in
   let project = Option.map (current_project session) ~f:(fun p -> p.Project.id) in
   match Host.focused session.host with
-  | Some tile when String.equal tile.kind "resources" -> return (Some tile)
+  | Some tile when String.equal tile.kind tile_kind -> return (Some tile)
   | _ ->
     (match session.host.registry, Host.active session.host with
      | Some initial, Some active ->
@@ -5332,7 +5385,7 @@ let resource_tile session ~current =
        let existing registry =
          List.find registry.Workspace.Snapshot.workspaces ~f:(fun w ->
            Workspace.Window_id.equal w.window active.window
-           && Option.equal String.equal w.preset (Some "resources"))
+           && Option.equal String.equal w.preset (Some kind))
        in
        let%bind () =
          if Option.is_some (existing initial)
@@ -5343,7 +5396,7 @@ let resource_tile session ~current =
              (Instantiate_template
                 { window = active.window
                 ; template =
-                    (Hardcaml_workbench_workspaces.Presets.builtins "resources"
+                    (Hardcaml_workbench_workspaces.Presets.builtins kind
                      |> Or_error.ok_exn)
                       .template
                 })
@@ -5358,7 +5411,7 @@ let resource_tile session ~current =
              Option.bind session.host.registry ~f:(fun registry ->
                List.find registry.tiles ~f:(fun tile ->
                  Workspace.Workspace_id.equal tile.workspace workspace.id
-                 && String.equal tile.kind "resources"
+                 && String.equal tile.kind tile_kind
                  && (not tile.hidden)
                  && Option.value_map
                       workspace.zoomed_tile
@@ -5373,8 +5426,8 @@ let resource_tile session ~current =
              session.host
              <- { session.host with
                   notice =
-                    "Resources tile hidden/zoomed out; restore it explicitly from the \
-                     palette"
+                    String.capitalize kind
+                    ^ " tile hidden/zoomed out; restore it explicitly from the palette"
                 };
            return tile)
      | _ -> return None)
@@ -5429,6 +5482,66 @@ let resource_input session tile input =
   in
   session.host <- Host.set_local session.host tile.id { local with resources };
   Option.value_map operation ~default:(return ()) ~f:(resource_request session tile)
+;;
+
+let workload_request session tile operation =
+  let local = Host.local session.host tile.Workspace.Tile.id in
+  let identity = local.identity in
+  let generation = local.workloads.generation in
+  let workloads =
+    Workloads_view.admit
+      local.workloads
+      ~generation
+      ~request_floor:(session.asic_request_id + 1)
+  in
+  session.host <- Host.set_local session.host tile.id { local with workloads };
+  asic_request session (Workloads operation) ~fresh_receipt:(fun response ->
+    let local = Host.local session.host tile.id in
+    if phys_equal identity local.identity
+    then
+      session.host
+      <- Host.set_local
+           session.host
+           tile.id
+           { local with
+             workloads =
+               Workloads_view.receipt
+                 local.workloads
+                 ~generation
+                 ~floor:(session.asic_request_id + 1)
+                 (Result.map response ~f:(fun _ -> ()))
+           })
+;;
+
+let workload_input session tile input =
+  let workspace = Workspace.Workspace_id.to_string tile.Workspace.Tile.workspace in
+  session.navigation_touched
+  <- List.dedup_and_sort ~compare:String.compare (workspace :: session.navigation_touched);
+  reconcile_synthesis session;
+  let local = Host.local session.host tile.Workspace.Tile.id in
+  let workloads, operation =
+    Workloads_view.input local.workloads ~asic:session.asic ~filter:local.filter input
+  in
+  session.host <- Host.set_local session.host tile.id { local with workloads };
+  Option.value_map operation ~default:(return ()) ~f:(workload_request session tile)
+;;
+
+let import_workload session ~current result digest =
+  let%bind tile = resource_tile ~kind:"workloads" session ~current in
+  match tile with
+  | None -> return ()
+  | Some tile ->
+    let workspace = Workspace.Workspace_id.to_string tile.Workspace.Tile.workspace in
+    session.navigation_touched
+    <- List.dedup_and_sort
+         ~compare:String.compare
+         (workspace :: session.navigation_touched);
+    let local = Host.local session.host tile.id in
+    let workloads, operation =
+      Workloads_view.inspect local.workloads result digest ~refresh:false
+    in
+    session.host <- Host.set_local session.host tile.id { local with workloads };
+    Option.value_map operation ~default:(return ()) ~f:(workload_request session tile)
 ;;
 
 let rec execute_host ?(validate = fun () -> Ok ()) session captured action ~exit =
@@ -5960,6 +6073,220 @@ let rec execute_host ?(validate = fun () -> Ok ()) session captured action ~exit
     | Load_hierarchy id -> async (fun () -> load_tile_hierarchy session id)
     | Hierarchy_detail id -> async (fun () -> detail_tile_hierarchy session id)
     | Discover_asic -> async (fun () -> asic_request session Discover)
+    | Open_workloads ->
+      let intent = ref () in
+      session.resource_navigation_intent <- intent;
+      async (fun () ->
+        let%bind tile =
+          resource_tile ~kind:"workloads" session ~current:(fun () ->
+            phys_equal intent session.resource_navigation_intent)
+        in
+        match tile with
+        | None -> return ()
+        | Some tile ->
+          let local = Host.local session.host tile.id in
+          (match local.workloads.query with
+           | Some query
+             when (not (Workloads_view.equal_mode local.workloads.mode Results))
+                  && List.exists
+                       (Workloads_view.snapshot session.asic).entries
+                       ~f:(fun d ->
+                         String.equal
+                           d.Asic_workloads.Descriptor.key
+                           (Workloads_view.key query)
+                         && Option.is_some d.digest) ->
+             let workloads, op =
+               Workloads_view.begin_query local.workloads query ~refresh:false
+             in
+             session.host <- Host.set_local session.host tile.id { local with workloads };
+             workload_request session tile op
+           | _ -> return ()))
+    | Workload_capture left ->
+      session.resource_navigation_intent <- ref ();
+      (match Host.focused session.host with
+       | Some tile when String.equal tile.kind "workloads" ->
+         let local = Host.local session.host tile.id in
+         if not (Workloads_view.capture_ready local.workloads)
+         then (
+           session.host
+           <- { session.host with
+                notice = "Open the selected result's validated detail before capture"
+              };
+           Effect.Ignore)
+         else (
+           match Workloads_view.verified_bundle local.workloads with
+           | Some bundle ->
+             let workloads = Workloads_view.capture local.workloads ~left ~bundle in
+             session.host <- Host.set_local session.host tile.id { local with workloads };
+             session.host
+             <- { session.host with
+                  notice =
+                    (if left then "Captured A" else "Captured B")
+                    ^ " from verified bundle locator"
+                };
+             Effect.Ignore
+           | None ->
+             session.host
+             <- { session.host with
+                  palette =
+                    Some
+                      { capture = captured
+                      ; commands = []
+                      ; query = ""
+                      ; index = 0
+                      ; argument =
+                          Some
+                            (Host.Workload_bundle
+                               (left, Workloads_view.capture_token local.workloads))
+                      }
+                ; notice =
+                    "Legacy inspection: enter its exact absolute verified bundle \
+                     directory"
+                };
+             Effect.Ignore)
+       | _ -> Effect.Ignore)
+    | Workload_import ->
+      session.resource_navigation_intent <- ref ();
+      let argument, notice =
+        ( Host.Workload_path
+        , "Enter exact absolute retained result.json; reads evidence only" )
+      in
+      session.host
+      <- { session.host with
+           palette =
+             Some
+               { capture = captured
+               ; commands = []
+               ; query = ""
+               ; index = 0
+               ; argument = Some argument
+               }
+         ; notice
+         };
+      Effect.Ignore
+    | Workload_result (result, digest) ->
+      let intent = ref () in
+      session.resource_navigation_intent <- intent;
+      async (fun () ->
+        import_workload
+          session
+          ~current:(fun () -> phys_equal intent session.resource_navigation_intent)
+          result
+          digest)
+    | Workload_input input ->
+      (match Host.focused session.host with
+       | Some tile when String.equal tile.kind "workloads" ->
+         async (fun () -> workload_input session tile input)
+       | _ -> Effect.Ignore)
+    | Workload_testing ->
+      let intent = ref () in
+      session.resource_navigation_intent <- intent;
+      async (fun () ->
+        let%bind tile =
+          resource_tile ~kind:"testing" session ~current:(fun () ->
+            phys_equal intent session.resource_navigation_intent)
+        in
+        match tile with
+        | None -> return ()
+        | Some tile ->
+          session.host
+          <- { session.host with
+               focus = Some tile.id
+             ; notice =
+                 "Testing: Discover suites; select pt8-memory-workloads, then Launch \
+                  selected subset form"
+             };
+          simulation_request session tile.id Discover)
+    | Workload_reference (tile_id, artifact) ->
+      let intent = ref () in
+      session.resource_navigation_intent <- intent;
+      let identity = Host.simulation_identity session.host tile_id in
+      let client = session.client
+      and instance_id = session.hello.instance_id in
+      let project = current_project session in
+      let current () =
+        phys_equal client session.client
+        && phys_equal intent session.resource_navigation_intent
+        && Option.equal
+             Workspace.Workspace_id.equal
+             session.host.active
+             (Some captured.workspace)
+        && Option.exists session.host.registry ~f:(fun registry ->
+          Workspace.Session_id.equal registry.session_id captured.session)
+        && V1.Daemon_instance_id.equal instance_id session.hello.instance_id
+        && Option.equal
+             Project_id.equal
+             (Option.map project ~f:(fun p -> p.Project.id))
+             (Option.map (current_project session) ~f:(fun p -> p.Project.id))
+        && phys_equal identity (Host.simulation_identity session.host tile_id)
+        && Option.value_map
+             (Host.testing session.host tile_id)
+             ~default:false
+             ~f:(fun (_, _, state) ->
+               Option.equal
+                 Simulation.Artifact.equal
+                 (Testing_workspace.workload_artifact state)
+                 (Some artifact))
+      in
+      async (fun () ->
+        match project, artifact.sha256, artifact.size with
+        | Some project, Some sha256, Some size when size > 0 && size <= 16384 ->
+          let%bind response =
+            request session.diagnostics_file (fun () ->
+              Http.Client.simulation
+                client
+                { instance_id
+                ; project = project.id
+                ; operation =
+                    Read_artifact_bytes
+                      { attempt_id = artifact.attempt_id
+                      ; artifact_id = artifact.id
+                      ; sha256
+                      ; offset = 0
+                      ; limit = 16384
+                      }
+                })
+          in
+          if not (current ())
+          then return ()
+          else (
+            let reference =
+              Result.bind response ~f:(fun s ->
+                Or_error.try_with (fun () ->
+                  let page = Option.value_exn s.Simulation.Snapshot.byte_page in
+                  if not
+                       (String.equal page.attempt_id artifact.attempt_id
+                        && String.equal page.artifact_id artifact.id
+                        && String.equal page.sha256 sha256
+                        && page.offset = 0
+                        && page.total_size = size
+                        && page.next_offset = size
+                        && page.eof)
+                  then failwith "Result reference page identity/span mismatch";
+                  let bytes =
+                    Cryptokit.transform_string (Cryptokit.Hexa.decode ()) page.bytes_hex
+                  in
+                  if String.length bytes <> size
+                     || not
+                          (String.equal
+                             (Terminal_presentation.Plain_rpc.digest bytes)
+                             sha256)
+                  then failwith "Result reference bytes changed";
+                  Workloads_view.reference bytes |> Or_error.ok_exn)
+                |> Result.map_error ~f:Error.to_string_hum)
+            in
+            match reference with
+            | Error error ->
+              session.host
+              <- { session.host with notice = "Workload reference: " ^ error };
+              return ()
+            | Ok (result, digest) -> import_workload session ~current result (Some digest))
+        | _ ->
+          session.host
+          <- { session.host with
+               notice = "Workload result reference unavailable or exceeds 16KiB"
+             };
+          return ())
     | Open_resources ->
       let expected_run =
         Option.bind (Host.focused session.host) ~f:(Host.tile_run session.host)
@@ -6217,9 +6544,9 @@ let rec execute_host ?(validate = fun () -> Ok ()) session captured action ~exit
       let intent, run =
         match preparation with
         | Prepare_stage (stage, run) | Quick_prepare_stage (stage, run) ->
-          (* The checklist may derive Timing's action from the fresh catalog. Such
-             an action is not an observation-advertised capability: revalidate the
-             fresh endpoint instead of requiring it in the raw observed stage. *)
+          (* The checklist may derive Timing's action from the fresh catalog. Such an
+             action is not an observation-advertised capability: revalidate the fresh
+             endpoint instead of requiring it in the raw observed stage. *)
           let catalog_timing =
             String.equal stage.id "timing"
             && not

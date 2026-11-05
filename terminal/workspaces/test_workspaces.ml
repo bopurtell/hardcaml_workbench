@@ -4,6 +4,82 @@ open Hardcaml_workbench_workspaces
 
 let kinds d = List.map d.Definition.tiles ~f:(fun t -> t.Common.kind)
 
+let%test_unit "Workloads builtin coexists with a retained custom workloads name" =
+  let module W = Workspace in
+  let template : Workspace_template.t =
+    { version = 1
+    ; name = "Personal workloads"
+    ; preset = None
+    ; views =
+        [ { kind = "logs"
+          ; hidden = false
+          ; geometry = { x = 3; y = 4; width = 57; height = 19 }
+          }
+        ]
+    }
+  in
+  let definition =
+    Workspace_config.definition_of_template ~key:"workloads" template |> Or_error.ok_exn
+  in
+  let config : Workspace_config.t =
+    { version = 1
+    ; id = "custom-workloads"
+    ; definitions = [ definition ]
+    ; windows =
+        [ { key = "main"
+          ; name = "Main"
+          ; workspaces =
+              [ { key = "mine"; name = "Mine"; definition = Custom "workloads" } ]
+          }
+        ]
+    }
+  in
+  let resolved =
+    Workspace_config.encode config
+    |> Or_error.ok_exn
+    |> Presets.decode
+    |> Or_error.ok_exn
+    |> Presets.resolve
+    |> Or_error.ok_exn
+  in
+  let initial =
+    W.apply
+      (W.initial ~session_id:(W.Session_id.of_string "custom-workloads"))
+      (Initialize_config resolved)
+    |> Result.ok
+    |> Option.value_exn
+  in
+  let snapshot =
+    W.Snapshot.sexp_of_t initial
+    |> Sexp.to_string_mach
+    |> Sexp.of_string
+    |> W.Snapshot.t_of_sexp
+  in
+  let builtin = Presets.builtins "workloads" |> Or_error.ok_exn in
+  let created =
+    W.apply
+      snapshot
+      (Mutate
+         { expected_revision = snapshot.revision
+         ; mutation =
+             Instantiate_template
+               { window = (List.hd_exn snapshot.windows).id; template = builtin.template }
+         })
+    |> Result.ok
+    |> Option.value_exn
+  in
+  List.iter snapshot.tiles ~f:(fun tile ->
+    assert (W.Tile.equal tile (W.tile created tile.id)));
+  List.iter snapshot.workspaces ~f:(fun workspace ->
+    assert (W.Arrangement.equal workspace (W.workspace created workspace.id)));
+  assert (List.exists created.tiles ~f:(fun tile -> String.equal tile.kind "workloads"));
+  assert (
+    List.equal
+      W.Config_workspace.equal
+      snapshot.config_workspaces
+      created.config_workspaces)
+;;
+
 let%test_unit "version1 custom resources key survives serialized upgrade and builtin \
                creation without rewriting layout"
   =

@@ -27,6 +27,7 @@ val set_catalog : t -> Simulation_catalog.t -> t
 val update_catalog : t -> (Simulation_catalog.t -> Simulation_catalog.t) -> t
 val selected_artifact : t -> string option
 val artifact : t -> Simulation.Artifact.t option
+val workload_artifact : t -> Simulation.Artifact.t option
 
 type artifact_identity =
   { id : string

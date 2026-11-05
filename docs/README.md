@@ -23,6 +23,7 @@ Project/provider commands remain useful without the application.
 | [Restore default layout](default_layout_restore.md) |One-step recovery: show defaults, hide extras, restore sizes, clear zoom and select Fit while preserving evidence/pins |
 | [Layout focus-order plan](layout_focus_order_plan.md) | Implemented layout-defined Tab/Shift-Tab traversal, agent work packages and validation results |
 | [Provider integration](fs0_provider_integration.md) | Implemented public API, configuration, cache and supervision limits |
+| [PT.8 Workloads](pt8_workloads.md) | Isolated session launch, verified retained results/A-B comparison and fresh example workload through Testing |
 | [Terminal host](fs0_terminal.md) / [Execution module](fs0_execution_module.md) | Current UI controls and daemon-routed generic execution boundary |
 | [Architecture](hardcaml_workbench_architecture.md) | Runtime, ownership, data and integration boundaries |
 | [Rendering](rendering.md) | Presentation, input, layout and headless interaction requirements |

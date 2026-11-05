@@ -19,7 +19,9 @@
   overview_layout
    synthesis_view
    resources_view
-   resources_view_test
+    resources_view_test
+   workloads_view
+   workloads_view_test
   terminal_result_view
   artifact_view
   artifact_export
@@ -80,7 +82,29 @@
  (modules presentation_preferences_probe)
  (libraries core terminal_presentation hardcaml_workbench_protocol)
  (preprocess
-  (pps ppx_jane)))
+   (pps ppx_jane)))
+
+(test
+ (name workloads_handoff_probe)
+ (modules workloads_handoff_probe)
+ (libraries async core core_unix terminal_presentation hardcaml_workbench_backend
+  hardcaml_workbench_protocol)
+ (preprocess (pps ppx_jane)))
+
+(rule
+ (target frontend_review_recheck.ml)
+ (deps frontend_review_recheck.py ../backend/test/frontend_review/review_frontend.ml)
+ (action
+  (with-stdout-to %{target}
+   (run python3 -B %{dep:frontend_review_recheck.py}
+    %{dep:../backend/test/frontend_review/review_frontend.ml}))))
+
+(test
+ (name frontend_review_recheck)
+ (modules frontend_review_recheck)
+ (libraries core async core_unix cryptokit yojson terminal_presentation
+  hardcaml_workbench_backend hardcaml_workbench_protocol hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))
 
 (executable
  (name waveform_probe)

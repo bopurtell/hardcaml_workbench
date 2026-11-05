@@ -402,6 +402,7 @@ module Snapshot = struct
     ; fresh_intent : Fresh.Intent.t option [@sexp.default None]
     ; workflows : Fresh.Workflow.t list [@sexp.default []]
     ; resources : Asic_resources.Snapshot.t option [@sexp.default None] [@sexp_drop_default.equal]
+    ; workloads : Asic_workloads.Snapshot.t option [@sexp.default None] [@sexp_drop_default.equal]
     }
   [@@deriving bin_io, compare, equal, sexp]
 end
@@ -429,6 +430,7 @@ module Operation = struct
   type t =
     | Get
     | Resources of Asic_resources.Operation.t
+    | Workloads of Asic_workloads.Operation.t
     | Discover
     | Describe of string
     | Plan of Selection.t

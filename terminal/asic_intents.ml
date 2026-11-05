@@ -200,6 +200,7 @@ let fixture_snapshot ?(operations = []) ?(summaries = []) runs : Asic.Snapshot.t
   ; fresh_intent = None
   ; workflows = []
   ; resources = None
+  ; workloads = None
   ; summaries
   ; finalizations = []
   ; artifacts = []

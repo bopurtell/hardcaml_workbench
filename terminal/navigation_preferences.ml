@@ -46,6 +46,8 @@ type t =
   ; session : string
   ; active : string option
   ; workspaces : workspace list
+  ; workloads : (string * Workloads_view.saved) list
+       [@sexp.default []] [@sexp_drop_default.equal]
   }
 [@@deriving sexp]
 
@@ -77,6 +79,15 @@ let validate (t : t) =
   let members = List.concat_map t.workspaces ~f:(fun w -> w.members) in
   if List.length members > 1024 then fail "member count limit exceeded";
   unique (List.map members ~f:(fun m -> m.tile));
+  if List.length t.workloads > 128 then fail "workload selection count exceeded";
+  unique (List.map t.workloads ~f:fst);
+  List.iter t.workloads ~f:(fun (tile, saved) ->
+    check_string tile;
+    if not
+         (List.exists members ~f:(fun m ->
+            String.equal m.tile tile && String.equal m.kind "workloads"))
+    then fail "workload tile not saved";
+    ignore (Workloads_view.restore saved : Workloads_view.t));
   List.iter t.workspaces ~f:(fun w ->
     check_string w.id;
     List.iter w.members ~f:(fun m ->
@@ -131,7 +142,15 @@ let decode ~project_key text =
 ;;
 
 let create ~project_key ~session ~active ~workspaces =
-  let t = { schema_version = 1; project_key; session; active; workspaces } in
+  let t =
+    { schema_version = 1; project_key; session; active; workspaces; workloads = [] }
+  in
+  ignore (encode t : string);
+  t
+;;
+
+let with_workloads t workloads =
+  let t = { t with workloads } in
   ignore (encode t : string);
   t
 ;;

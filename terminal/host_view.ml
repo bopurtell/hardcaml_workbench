@@ -1905,6 +1905,14 @@ let rows host data tile ~width ~height =
            Hierarchy_view.rows ~icons:host.appearance.icons view ~height)
        | "planned-run" ->
          planned_rows host tile ~width |> List.map ~f:(fun row -> row.Planned_run.text)
+       | "workloads" ->
+         Workloads_view.rows
+           local.workloads
+           ~asic:data.asic
+           ~filter:local.filter
+           ~width
+           ~height
+         |> List.map ~f:E.text
        | "resources" | "resource-summary" ->
          let view =
            Resources_view.reconcile
@@ -2264,7 +2272,9 @@ let tile_view
     Option.value_map host.H.focus ~default:false ~f:(W.Tile_id.equal tile.id)
   in
   let binding =
-    if Resources_view.is_kind tile.kind && Option.is_some local.resources.explicit
+    if String.equal tile.kind "workloads"
+    then "explicit workload evidence"
+    else if Resources_view.is_kind tile.kind && Option.is_some local.resources.explicit
     then "explicit resource source"
     else if Testing_workspace.is_pane tile.kind
             || P.Waveforms.is_pane tile.kind
@@ -2769,7 +2779,16 @@ let tile_view
            (List.drop rows local.scroll))
   in
   let body =
-    if Resources_view.is_kind tile.kind
+    if String.equal tile.kind "workloads"
+    then
+      Workloads_view.rows
+        local.workloads
+        ~asic:data.asic
+        ~filter:local.filter
+        ~width:body_width
+        ~height:body_height
+      |> E.render ~attrs:(evidence_attrs appearance)
+    else if Resources_view.is_kind tile.kind
     then (
       let view =
         Resources_view.reconcile
@@ -3470,6 +3489,11 @@ let render_palette host dimensions background =
       | Some (H.Resource_path bundle) ->
         (if bundle then "IMPORT EMITTED BUNDLE" else "IMPORT RETAINED RESOURCE EVIDENCE")
         ^ " — exact absolute directory; Enter reads; no run allocation"
+      | Some H.Workload_path ->
+        "IMPORT WORKLOAD RESULT — exact absolute result.json; Enter reads; no execution"
+      | Some (H.Workload_bundle (left, _)) ->
+        (if left then "CAPTURE A" else "CAPTURE B")
+        ^ " — exact absolute verified bundle directory; source digest stays frozen"
       | Some (H.Finalization_attempt run) ->
         "INSPECT FINALIZATION for "
         ^ run_label run

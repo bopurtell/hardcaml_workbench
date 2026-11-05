@@ -53,7 +53,11 @@ val metadata
 
 val resources
   : Config.t -> root:string -> environment:V1.Environment_selection.t
-  -> kind:string -> target:string -> string list -> Dune_adapter.Invocation.t
+   -> kind:string -> target:string -> string list -> Dune_adapter.Invocation.t
+
+val workloads
+  : Config.t -> root:string -> environment:V1.Environment_selection.t
+  -> Asic_workloads.Query.t -> Dune_adapter.Invocation.t
 
 val run_prepared
   :  Config.t

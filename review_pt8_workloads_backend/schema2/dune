@@ -1,0 +1,13 @@
+(rule
+ (target recheck.ml)
+ (deps generate.py cases.ml ../probe.ml)
+ (action
+  (with-stdout-to %{target}
+   (run python3 -B %{dep:generate.py} %{dep:../probe.ml} %{dep:cases.ml}))))
+
+(executable
+ (name recheck)
+ (modules recheck)
+ (libraries async core core_unix yojson hardcaml_workbench_backend
+  hardcaml_workbench_protocol hardcaml_workbench_project_integration)
+ (preprocess (pps ppx_jane)))

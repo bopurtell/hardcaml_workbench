@@ -81,6 +81,29 @@ let artifact_identity t =
        { id = a.id; sha256 = a.sha256; size = a.size }))
 ;;
 
+let workload_artifact t =
+  match Simulation_view.detail t.view with
+  | _ when Option.is_some t.restored_artifact && Option.is_none (artifact t) -> None
+  | Some d
+    when S.Lifecycle.equal d.lifecycle Finished
+         && Option.equal String.equal t.view.attempt (Some d.id) ->
+    let eligible (a : S.Artifact.t) =
+      Option.value_map t.view.case_id ~default:false ~f:(fun case_id ->
+        List.mem [ "flops256"; "exact256" ] case_id ~equal:String.equal
+        && List.mem d.captured.selection.cases case_id ~equal:String.equal
+        && List.exists d.cases ~f:(fun c -> String.equal c.case_id case_id)
+        && String.equal a.id (d.id ^ "-" ^ case_id ^ "-result-reference")
+        && String.equal a.attempt_id d.id
+        && Option.equal String.equal a.case_id (Some case_id))
+      && String.equal a.media_type "application/json"
+      && S.Artifact.Availability.equal a.availability Available
+    in
+    Option.first_some
+      (Option.filter (artifact t) ~f:eligible)
+      (List.find d.artifacts ~f:(fun a -> String.equal a.attempt_id d.id && eligible a))
+  | _ -> None
+;;
+
 let selection_unavailable t =
   match Simulation_view.detail t.view with
   | None ->
@@ -590,6 +613,88 @@ module Test_data = struct
       (Ok snapshot)
   ;;
 end
+
+let%test_unit "PT8 result handoff resolves only the selected completed case and exact \
+               artifact"
+  =
+  let reference =
+    { Test_data.artifact with
+      id = Test_data.attempt.id ^ "-flops256-result-reference"
+    ; media_type = "application/json"
+    ; case_id = Some "flops256"
+    }
+  in
+  let detail =
+    { Test_data.attempt with
+      captured =
+        { Test_data.attempt.captured with
+          selection =
+            { Test_data.attempt.captured.selection with
+              cases = [ "flops256"; "exact256" ]
+            }
+        }
+    ; cases =
+        List.map2_exn
+          Test_data.attempt.cases
+          [ "flops256"; "exact256" ]
+          ~f:(fun c case_id -> { c with case_id })
+    ; artifacts = [ reference ]
+    }
+  in
+  let snapshot = { Test_data.snapshot with detail = Some detail } in
+  let view =
+    { Simulation_view.empty with
+      snapshot = Some snapshot
+    ; attempt = Some Test_data.attempt.id
+    ; case_id = Some "flops256"
+    }
+  in
+  let t = set_view empty view in
+  assert (Option.equal S.Artifact.equal (workload_artifact t) (Some reference));
+  assert (Option.is_none (workload_artifact (select_case t "exact256")));
+  let running =
+    set_view
+      t
+      { view with
+        snapshot =
+          Some
+            { snapshot with
+              detail = Some { detail with lifecycle = Running; artifacts = [ reference ] }
+            }
+      }
+  in
+  assert (Option.is_none (workload_artifact running));
+  let changed =
+    set_view
+      t
+      { view with
+        snapshot =
+          Some
+            { snapshot with
+              detail =
+                Some
+                  { detail with
+                    artifacts = [ { reference with availability = Changed } ]
+                  }
+            }
+      }
+  in
+  assert (Option.is_none (workload_artifact changed));
+  let restored =
+    restore_selection
+      t
+      ~attempt:Test_data.attempt.id
+      ~case_id:(Some "flops256")
+      ~artifact:
+        (Some
+           { id = reference.id
+           ; sha256 = Some "saved-different-hash"
+           ; size = reference.size
+           })
+    |> fun t -> set_view t view
+  in
+  assert (Option.is_none (workload_artifact restored))
+;;
 
 let%test_unit "detail resolves typed identities together without rewriting provider \
                labels or selectors"

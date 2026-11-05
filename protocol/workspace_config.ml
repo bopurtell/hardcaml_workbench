@@ -122,7 +122,11 @@ let max_tree_nodes = 4096
 let max_dimension = 1_000_000
 let max_sexp_nesting = 256
 let max_sexp_comments = 256
-let builtin_ids = [ "overview"; "timing"; "testing"; "waveforms"; "resources" ]
+
+let builtin_ids =
+  [ "overview"; "timing"; "testing"; "waveforms"; "resources"; "workloads" ]
+;;
+
 let is_builtin key = List.mem builtin_ids key ~equal:String.equal
 
 (** Version 1 already permitted user definitions named [resources]. Adding a builtin is

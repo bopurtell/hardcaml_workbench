@@ -1,0 +1,15 @@
+(executable
+ (name review_frontend)
+ (modules review_frontend)
+ (libraries core async core_unix cryptokit yojson terminal_presentation
+  hardcaml_workbench_backend hardcaml_workbench_protocol hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))
+
+; Historical probe remains runnable unchanged. Its F2 fixture now violates the
+; repaired backend precondition. The explicit corrected harness is the regression.
+(test
+ (name review_frontend_corrected)
+ (modules review_frontend_corrected)
+ (libraries core async core_unix cryptokit yojson terminal_presentation
+  hardcaml_workbench_backend hardcaml_workbench_protocol hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))

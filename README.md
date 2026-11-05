@@ -2,6 +2,11 @@
 
 A development workbench for inspecting, running, measuring, and debugging Hardcaml designs.
 
+**PT.8 Workloads (2026-11-05):** inspect verified workload results, capture explicit
+A/B variants and launch a fresh example workload through Testing. The
+[isolated session launch guide](docs/pt8_workloads.md) provides the server/client
+commands and accepted retained→fresh-run walkthrough, preserving existing sessions.
+
 **Current direction (2026-10-16):** configurable Bonsai Term tiles over typed
 provider/module contracts, a command palette and named workspaces linked to a shared
 Main run context by default. Workspaces can inspect independently; tiles can pin

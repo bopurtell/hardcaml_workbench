@@ -161,6 +161,8 @@ type project =
   ; mutable inspection_details : Inspection_wire.Detail.t list
   ; resources : Asic_resources_service.t
   ; resource_refreshes : bool ref String.Table.t
+  ; workloads : Asic_workloads_service.t
+  ; workload_refreshes : bool ref String.Table.t
   ; detail_cache : Inspection_detail_cache.t
   ; inspection_refreshes : bool ref String.Table.t
   ; hot : Asic.Summary.t String.Table.t
@@ -359,8 +361,10 @@ let load_project t ~root ~environment =
       [%sexp
         (root : string)
         , (environment : V1.Environment_selection.t)
-        , (config : Config.t option)]
+         , (config : Config.t option)]
   in
+  let%bind workloads = In_thread.run (fun () ->
+    Asic_workloads_service.create ~state_dir:t.state_dir ~identity) in
   let p =
     { root
     ; environment
@@ -379,6 +383,8 @@ let load_project t ~root ~environment =
     ; inspection_details = []
     ; resources = Asic_resources_service.create ~state_dir:t.state_dir ~identity
     ; resource_refreshes = String.Table.create ()
+    ; workloads
+    ; workload_refreshes = String.Table.create ()
     ; detail_cache =
         Inspection_detail_cache.create
           ~entries:t.inspection_detail_cache_entries
@@ -1186,6 +1192,7 @@ let snapshot p : Asic.Snapshot.t =
   ; fresh_intent = p.fresh_intent
   ; workflows = p.workflows
   ; resources = Some (Asic_resources_service.snapshot p.resources)
+  ; workloads = Some (Asic_workloads_service.snapshot p.workloads)
   }
 ;;
 
@@ -2326,6 +2333,57 @@ let rec handle_operation ?prepared_input t p operation =
   in
   match operation with
   | Asic.Operation.Get -> Deferred.unit
+  | Workloads (Asic_workloads.Operation.Load { query = workload_query; refresh } as operation) ->
+    Asic_workloads_service.select p.workloads workload_query;
+    let key = Asic_workloads.Operation.key operation in
+    (match Hashtbl.find p.workload_refreshes key with
+     | Some requested -> if refresh then requested := true
+     | None ->
+       let requested = ref refresh in
+       Hashtbl.set p.workload_refreshes ~key ~data:requested;
+       let start () =
+         schedule t p ~key ~kind:"workloads" ~execution:false (fun task ->
+           Monitor.protect
+             ~finally:(fun () -> Hashtbl.remove p.workload_refreshes key; Deferred.unit)
+             (fun () -> serialized p "workloads-publication" (fun () ->
+               task.pending <- { task.pending with activity = Evidence_cache_lookup };
+               if not !requested && Asic_workloads_service.cached p.workloads workload_query
+               then Deferred.unit
+               else (
+                 task.pending <- { task.pending with activity = Evidence_read };
+                 let%bind result = Monitor.try_with (fun () ->
+                   let cancel = Ivar.read task.cancel in
+                   let executable = (config p).provider_executable in
+                   let%bind provider_identity = In_thread.run (fun () ->
+                     Asic_workloads_service.check_separation ~state_dir:t.state_dir workload_query;
+                     Asic_workloads_service.provider_identity ~executable workload_query) in
+                   let%bind paths = In_thread.run (fun () ->
+                     Asic_workloads_service.capture_targets workload_query) in
+                   let%bind metadata = query ~max_bytes:(1024*1024) t p cancel (invoke p Adapter.metadata) in
+                   Asic_workloads_service.check_capabilities workload_query metadata;
+                   let%bind raw = Throttle.enqueue t.queries (fun () ->
+                     Asic_process.run ~max_stdout_bytes:(1024*1024) ~max_record_bytes:(1024*1024)
+                       ~seconds:30. ~cancel ~on_process:ignore ~on_line:(fun _ -> Deferred.unit)
+                       (invoke p (fun c ~root ~environment -> Adapter.workloads c ~root ~environment workload_query))) in
+                   let%bind after = In_thread.run (fun () ->
+                     Public.require (List.equal String.equal paths
+                       (Asic_workloads_service.capture_targets workload_query)) "Workload selected root aliases changed during read";
+                     Asic_workloads_service.provider_identity ~executable workload_query) in
+                   Public.require (String.equal provider_identity after) "Workload provider changed during read";
+                   Public.require (not (Ivar.is_full task.cancel)) "Workload read cancelled";
+                   Asic_workloads_service.check_targets workload_query ~paths raw;
+                   Asic_workloads_service.publish ~paths
+                     ~check:(fun () -> Public.require (not (Ivar.is_full task.cancel)) "Workload read cancelled")
+                     p.workloads workload_query ~provider_identity raw)
+                 in
+                 match result with
+                 | Ok () -> Deferred.unit
+                 | Error exn ->
+                   Asic_workloads_service.fail p.workloads workload_query (Exn.to_string exn);
+                   raise exn))))
+       in
+       (try start () with exn -> Hashtbl.remove p.workload_refreshes key; raise exn));
+    Deferred.unit
   | Resources operation ->
     let key = Asic_resources.Operation.key operation in
     (match operation with
