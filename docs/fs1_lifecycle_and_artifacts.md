@@ -270,6 +270,10 @@ collect/accept/cancel specimens above.
 
 ## Implementation map and remaining scope
 
+The subsequent [WB-065 bounded lifecycle matrix](asic_lifecycle_matrix.md) adds
+deterministic allocation/cancellation, late-response, HTTP detach/concurrent-reader
+and reconnect ownership evidence, with verification and explicit remaining gaps.
+
 - `protocol/asic.ml`, `protocol/asic_artifact.ml`: operations, lifecycle facts,
   collateral record, references/pages, and shared read key.
 - `adapters/asic_adapter.ml`: exact provider argument vectors and operation store.

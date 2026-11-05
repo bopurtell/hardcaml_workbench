@@ -1189,7 +1189,7 @@ let snapshot p : Asic.Snapshot.t =
   }
 ;;
 
-let schedule t p ~key ~kind ~execution f =
+let schedule ?run t p ~key ~kind ~execution f =
   Public.require (not t.closing) "ASIC service shutting down";
   match Hashtbl.find p.tasks key with
   | Some task
@@ -1209,7 +1209,7 @@ let schedule t p ~key ~kind ~execution f =
           { Asic.Pending.key
           ; kind
           ; state = "pending"
-          ; run = None
+          ; run
           ; error = None
           ; activity = Unreported
           }
@@ -1792,6 +1792,7 @@ let reserve_finalization t p ~key ~run ~execution_file ~acceptance =
         Monitor.try_with (fun () ->
           let%map () = save_required t p in
           schedule
+            ~run
             t
             p
             ~key:("finalize:" ^ key)
@@ -2315,8 +2316,8 @@ let rec handle_operation ?prepared_input t p operation =
     | operation -> None, operation
   in
   Option.iter analysis ~f:Asic_timing_analysis.validate_target;
-  let enqueue ~key ~kind f =
-    schedule t p ~key ~kind ~execution:false (fun task -> f (Ivar.read task.cancel))
+  let enqueue ?run ~key ~kind f =
+    schedule ?run t p ~key ~kind ~execution:false (fun task -> f (Ivar.read task.cancel))
   in
   let public_query ~key ~kind invocation apply =
     enqueue ~key ~kind (fun cancel ->
@@ -2515,23 +2516,26 @@ let rec handle_operation ?prepared_input t p operation =
     reserve_finalization t p ~key ~run ~execution_file ~acceptance
   | Observe_finalization key ->
     let f = find_finalization p key in
-    enqueue ~key:("finalize-observe:" ^ key) ~kind:"finalize-observe" (fun cancel ->
-      let%bind result =
-        Monitor.try_with (fun () ->
-          let%bind () = check_provider t p cancel in
-          inspect_owned_finalization t p cancel key >>| fun _ -> ())
-      in
-      match result with
-      | Ok () -> Deferred.unit
-      | Error exn ->
-        update_finalization p key (fun current ->
-          with_finalization_errors
-            current
-            ~producer_error:current.producer_error
-            ~observation_error:(Some (Exn.to_string exn)));
-        let%bind () = persist t p in
-        raise exn);
-    ignore (f : Finalization_stored.t);
+    enqueue
+      ~run:f.value.run
+      ~key:("finalize-observe:" ^ key)
+      ~kind:"finalize-observe"
+      (fun cancel ->
+         let%bind result =
+           Monitor.try_with (fun () ->
+             let%bind () = check_provider t p cancel in
+             inspect_owned_finalization t p cancel key >>| fun _ -> ())
+         in
+         match result with
+         | Ok () -> Deferred.unit
+         | Error exn ->
+           update_finalization p key (fun current ->
+             with_finalization_errors
+               current
+               ~producer_error:current.producer_error
+               ~observation_error:(Some (Exn.to_string exn)));
+           let%bind () = persist t p in
+           raise exn);
     Deferred.unit
   | List_artifacts run ->
     ignore (find_run p run : Asic.Run.t);

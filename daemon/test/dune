@@ -1,5 +1,6 @@
 (test
  (name test_rpc)
+ (modules test_rpc)
  (libraries
   async
   cohttp-async
@@ -8,6 +9,25 @@
   hardcaml_workbench_protocol
   hardcaml_workbench_native_http
   hardcaml_workbench_rpc_server)
+ (preprocess
+  (pps ppx_jane))
+ (lint
+  (pps ppx_js_style)))
+
+(test
+ (name test_asic_clients)
+ (modules test_asic_clients)
+ (deps ../../backend/test/asic/fake_provider.py)
+ (libraries
+  async
+  cohttp-async
+  core
+  core_unix.command_unix
+  hardcaml_workbench_protocol
+  hardcaml_workbench_project_integration
+  hardcaml_workbench_native_http
+  hardcaml_workbench_rpc_server
+  yojson)
  (preprocess
   (pps ppx_jane))
  (lint

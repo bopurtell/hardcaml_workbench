@@ -30,9 +30,18 @@ def plan():
                     bundle_identity='b' * 64)
 
 
+def lifecycle_gate(name, value):
+    """Two FIFO rendezvous: arrival is acknowledged before the parent releases us."""
+    prefix = os.path.join(root, 'wb065-' + name)
+    with open(prefix + '.ready', 'w') as out:
+        out.write(value)
+    with open(prefix + '.release') as src:
+        src.read()
+
+
 if args == ['lifecycle-exit']:
     sys.exit(0)
-elif args[:1] in [['lifecycle-wait'], ['lifecycle-output'], ['lifecycle-malformed'], ['lifecycle-cancel']]:
+elif args[:1] in [['lifecycle-wait'], ['lifecycle-output'], ['lifecycle-malformed'], ['lifecycle-cancel'], ['wb065-unrelated']]:
     mode = args[0]
 
     def stop_fixture(_signal, _frame):
@@ -51,7 +60,10 @@ elif args[:1] in [['lifecycle-wait'], ['lifecycle-output'], ['lifecycle-malforme
         for _ in range(9):
             sys.stdout.write('x' * (1024 * 1024))
             sys.stdout.flush()
-    time.sleep(30)
+    if mode == 'wb065-unrelated':
+        signal.pause()
+    else:
+        time.sleep(30)
 elif args == ['--version', '--json']:
     emit(dict(cli_contract=dict(version=4, capabilities=dict(
         namedflow1=True, timing_stage1=os.path.exists('timing-capability')))))
@@ -267,6 +279,11 @@ elif args[:1] == ['report']:
                                [(ref, count if ref['boundary'] == 'synthesis' else count + 1000)
                                 for ref in references]]))
 elif args[:1] == ['finalize']:
+    control_file = os.path.join(root, 'wb065-finalize.json')
+    control = {}
+    if os.path.exists(control_file):
+        with open(control_file) as src:
+            control = json.load(src)
     if os.path.exists('finalize-no-allocation'):
         print('fixture allocation failure', file=sys.stderr)
         sys.exit(2)
@@ -300,16 +317,30 @@ elif args[:1] == ['finalize']:
     def stop_finalization(_signal, _frame):
         receipt.update(status='interrupted', ended_at='recorded', exit_code=143)
         save_receipt()
+        if control.get('late_allocation'):
+            emit(envelope('segment-finalization', event='allocated', attempt=attempt,
+                          attempt_id=operation_id))
+            lifecycle_gate(control['late_allocation_gate'], attempt)
         with open(os.path.join(attempt, 'terminated'), 'w') as out:
             out.write('owned finalize received SIGTERM')
         sys.exit(143)
 
     signal.signal(signal.SIGTERM, stop_finalization)
     save_receipt()
+    if control.get('before_allocation'):
+        lifecycle_gate(control['before_allocation'], attempt)
+    if control.get('initial_inspect_gate'):
+        with open(os.path.join(attempt, 'wb065-inspect.json'), 'w') as out:
+            json.dump(dict(gate=control['initial_inspect_gate']), out)
+        receipt['phase'] = 'external_postcheck' if request['accept'] else 'collection'
+        save_receipt()
     emit(envelope('segment-finalization', event='allocated', attempt=attempt, attempt_id=operation_id))
     receipt['phase'] = 'external_postcheck' if request['accept'] else 'collection'
     save_receipt()
-    time.sleep(30 if os.path.exists('finalize-hold') else 0.3)
+    if control.get('after_allocation'):
+        lifecycle_gate(control['after_allocation'], attempt)
+    else:
+        time.sleep(30 if os.path.exists('finalize-hold') else 0.3)
     failed = request['accept']
     results = dict(schema_version=1, run_id=operation_id, build_identity='b' * 64,
                    provenance=dict(contract='hardcaml-asic.segment-finalization',
@@ -331,7 +362,23 @@ elif args[:1] == ['finalization-inspect']:
         print('fixture finalization inspection unavailable', file=sys.stderr)
         sys.exit(2)
     with open(os.path.join(args[1], 'operation.json')) as src:
-        emit(json.load(src))
+        receipt = json.load(src)
+    gate_file = os.path.join(args[1], 'wb065-inspect.json')
+    if os.path.exists(gate_file):
+        with open(gate_file) as src:
+            control = json.load(src)
+        os.unlink(gate_file)  # Only this exact reader consumes the one-shot gate.
+
+        def stop_reader(_signal, _frame):
+            with open(os.path.join(args[1], 'reader-terminated'), 'w') as out:
+                out.write(control['gate'])
+            # A successful late response must still be fenced by cancellation.
+            emit(receipt)
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, stop_reader)
+        lifecycle_gate(control['gate'], args[1])
+    emit(receipt)
 else:
     print('Unsupported fixture argv: ' + repr(args), file=sys.stderr)
     sys.exit(2)
