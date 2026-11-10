@@ -1,5 +1,12 @@
 # Section 1 resource/runtime verification handoff
 
+**Superseded status, 2026-11-10:** the [refactored closeout](developer_workflow_refactored_closeout.md)
+records actual passing runtime acceptance. A new opt-in provider enforces six total
+container tasks; schema2 activation/readiness binds an independent kernel-cap proof.
+The observer handles confirmed exit/reinspection races and records unknown samples
+as null. The earlier unresolved bound and never-attached status below are historical;
+do not reuse these old activation templates or provider identities for a new run.
+
 2026-11-10. Implements the verification-only runtime slice of
 [the acceptance plan](developer_workflow_acceptance_plan.md). EDA is **not activated**
 by this handoff. No flow, owner pair, provider, bridge, configuration or retained

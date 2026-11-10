@@ -8,7 +8,8 @@ Project/provider commands remain useful without the application.
 
 | Document | What it answers |
 | --- | --- |
-| [Session checkpoint](session_checkpoint.md) | New-session pickup: ASIC PT.0–PT.8, delivered Workbench integration, paused synthesis acceptance and current test-refactor boundaries |
+| [Session checkpoint](session_checkpoint.md) | New-session pickup: ASIC PT.0–PT.8, delivered integration, developer acceptance closeout and deferred test-refactor boundaries |
+| [Refactored developer workflow closeout](developer_workflow_refactored_closeout.md) | Actual synthesis/collection, report/check inspection and same-store restart; exact capture, resource limits and independently reviewed evidence |
 | [Migration/refactor guides](migration_guides/README.md) | Actionable continuation plans, including the next Workbench test-organization steps |
 | [Feature list](feature_list.md) | What users want to do, what exists, and what comes first |
 | [Feature ticket catalog](features/README.md) |65 categorized WB tickets: one file each, priority, size/points, dependencies and decisions |

@@ -53,8 +53,15 @@ elif args[:1] in [['lifecycle-wait'], ['lifecycle-output'], ['lifecycle-malforme
             sys.stdout.flush()
     time.sleep(30)
 elif args == ['--version', '--json']:
-    emit(dict(cli_contract=dict(version=4, capabilities=dict(
-        namedflow1=True, timing_stage1=os.path.exists('timing-capability')))))
+    capabilities = dict(namedflow1=True, timing_stage1=os.path.exists('timing-capability'))
+    metadata = dict(cli_contract=dict(version=4, capabilities=capabilities))
+    if os.path.exists('synthesis-collection-capability'):
+        capabilities['synthesis_collection1'] = dict(schema_version=1, profile='synthesis-total-tasks-v1',
+            total_container_tasks=6, fresh_only=True, acceptance=False,
+            opt_in='HARDCAML_ASIC_SYNTHESIS_TASK_LIMIT=6')
+        metadata['execution_envelope'] = dict(schema_version=1, profile='synthesis-total-tasks-v1',
+            total_container_tasks=6, configured_executor_max_workers=6, reduced_usable_executor_concurrency=True)
+    emit(metadata)
 elif args[:2] == ['flow', 'list']:
     if os.path.exists('fail-discovery'):
         sys.exit(1)
@@ -207,12 +214,17 @@ elif args[:1] == ['report']:
     if os.path.exists('revision'):
         count += 1
     boundary = 'signoff' if profile == 'terminal' else 'synthesis'
+    synthesis_collection = profile == 'terminal' and os.path.exists('synthesis-finalization')
+    if synthesis_collection:
+        boundary = 'synthesis'
     reference = dict(path=attempt, boundary=boundary, identity=str(count))
     references = [reference]
     if profile == 'terminal':
         stages = ['synthesis', 'floorplan', 'placement', 'cts', 'routing', 'signoff']
         if os.path.exists('seven-stage-finalization'):
             stages.insert(-1, 'timing')
+        if synthesis_collection:
+            stages = ['synthesis']
         references = [dict(path=os.path.join(attempt, stage) if stage != 'signoff' else attempt,
                            boundary=stage, identity=str(count))
                       for stage in stages]
@@ -237,7 +249,7 @@ elif args[:1] == ['report']:
                                            status='failed', exit_code=2)])
     if profile == 'terminal':
         stages = [ref['boundary'] for ref in references]
-        execution.update(exit_code=0, plan=dict(schema_version=(4 if os.path.exists('seven-stage-finalization') else 3), initial_boundary=None, stages=stages),
+        execution.update(exit_code=0, plan=dict(schema_version=(4 if synthesis_collection or os.path.exists('seven-stage-finalization') else 3), initial_boundary=None, stages=stages),
                          occurrences=[dict(action_key='implementation.' + stage,
                                            occurrence_id=stream + '/implementation.' + stage,
                                            status='completed', exit_code=0) for stage in stages])

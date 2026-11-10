@@ -30,3 +30,10 @@
   (pps ppx_jane))
  (lint
   (pps ppx_js_style)))
+
+(test
+ (name test_finalization_eligibility)
+ (modules test_finalization_eligibility)
+ (libraries core hardcaml_workbench_backend yojson)
+ (preprocess (pps ppx_jane))
+ (lint (pps ppx_js_style)))

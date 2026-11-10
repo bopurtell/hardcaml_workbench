@@ -1,5 +1,12 @@
 # Developer workflow acceptance implementation handoff
 
+**Superseded status, 2026-11-10:** see the
+[refactored-example closeout](developer_workflow_refactored_closeout.md) for actual
+synthesis/collection, inspection and restart acceptance. This page preserves the
+old paused attempt and its interfaces. Its pre-crash temporary store/receipts are
+gone; do not execute its historical resume command. Current receipts explicitly
+join successful producers with separately passing read-only inspection/restart.
+
 2026-11-10. **Phase 1 passed; paused before EDA activation.** Implements the
 acceptance-owner slice in [the written plan](developer_workflow_acceptance_plan.md).
 The coordinator has not activated the six-worker allocation. No fresh synthesis,

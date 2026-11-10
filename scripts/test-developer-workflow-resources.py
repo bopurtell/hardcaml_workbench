@@ -171,7 +171,9 @@ class Handshake(unittest.TestCase):
         self.request = work / 'request.json'
         self.request.write_text(json.dumps(dict(boundary='synthesis', checkpoint=None, operation='execute_segment')))
         self.c = dict(Id='a' * 64, Image=r.IMAGE, Name='/hardcaml-asic-execution-' + 'b' * 32,
-            Path='python3', Args=['-I', '-B', str(staged), str(self.request)], State=dict(Pid=999999),
+            Path='python3', Args=['-I', '-B', str(staged), str(self.request)],
+            State=dict(Pid=999999, Running=True, Status='running', StartedAt='2026-11-10T00:00:00Z',
+                       FinishedAt='0001-01-01T00:00:00Z'),
             HostConfig=dict(NanoCpus=6_000_000_000, CpuQuota=0, PidsLimit=6),
             Config=dict(Env=[key + '=6' for key in r.LIMIT_ENV]),
             Mounts=[dict(Type='bind', Source=str(work), Destination=str(work), RW=True)])
@@ -190,16 +192,24 @@ class Handshake(unittest.TestCase):
         self.cap['proof_files'] = {name: r.digest(self.cap_path.parent / name) for name in r.CAP_PROOF_FILES}
         self.cap_path.write_text(json.dumps(self.cap))
 
-    def run_watch(self, containers=None, rows=None, sleep=None):
+    def run_watch(self, containers=None, rows=None, sleep=None, proc_snapshots=None, inspections=None, tasks_fn=None):
         rows = rows or self.rows
-        snapshots = iter([{pid: row for pid, row in rows.items() if pid not in r.descendants(rows, 999999)}, rows])
+        snapshots = iter(proc_snapshots or [{pid: row for pid, row in rows.items() if pid not in r.descendants(rows, 999999)}, rows])
+        def finished(_):
+            self.rows.pop(999999, None)
+            self.finish.touch()
         with patch.object(r, 'running', side_effect=containers or [[], [self.c], [], []]), \
+             patch.object(r, 'inspect_container', side_effect=inspections, return_value=None), \
              patch.object(r, 'processes', side_effect=lambda: next(snapshots, rows)), \
-             patch.object(r, 'tasks', return_value=[]), \
+             patch.object(r, 'tasks', side_effect=tasks_fn or (lambda row, _: [dict(tid=row['pid'], state='S', cpu_ticks=0, delta_ticks=None)])), \
              patch.object(r, 'command', return_value=json.dumps(self.engine)), \
-             patch.object(r, 'kernel_limits', return_value={'pids.max': '6', 'pids.current': '1'}), \
-             patch.object(r.time, 'sleep', side_effect=sleep or (lambda _: self.finish.touch())):
+             patch.object(r, 'kernel_limits', return_value=self.kernel()), \
+             patch.object(r.time, 'sleep', side_effect=sleep or finished):
             return r.watch(self.args, self.out)
+
+    def kernel(self, maximum='6'):
+        return {'path': '/sys/fs/cgroup/docker-' + self.c['Id'] + '.scope',
+                'pids.max': maximum, 'pids.current': '1'}
 
     def test_complete_handshake_and_exact_receipt(self):
         self.assertTrue(self.run_watch())
@@ -215,6 +225,7 @@ class Handshake(unittest.TestCase):
     def test_finish_cannot_bypass_final_competition_check(self):
         def competing(_):
             self.finish.touch()
+            self.rows.pop(999999, None)
             self.rows[77] = dict(pid=77, ppid=0, argv=['make', '-j20'], comm='make', cwd=str(self.store))
         with self.assertRaisesRegex(RuntimeError, 'competing build'):
             self.run_watch(sleep=competing)
@@ -222,7 +233,7 @@ class Handshake(unittest.TestCase):
 
     def test_finish_with_live_container_rejects(self):
         with self.assertRaisesRegex(RuntimeError, 'finish requested'):
-            self.run_watch(containers=[[], [self.c], [self.c]])
+            self.run_watch(containers=[[], [self.c], [self.c]], sleep=lambda _: self.finish.touch())
 
     def test_finish_without_execute_is_failure(self):
         with self.assertRaisesRegex(RuntimeError, 'without an observed'):
@@ -269,7 +280,7 @@ class Handshake(unittest.TestCase):
         other.write_text(json.dumps(dict(argv=[r.DOCKER, 'run', '--name', second['Name'][1:],
                                               r.IMAGE, *second['Args']])))
         with self.assertRaisesRegex(RuntimeError, 'second synthesis execution'):
-            self.run_watch(containers=[[], [self.c], [second]], sleep=lambda _: None)
+            self.run_watch(containers=[[], [self.c], [second]], sleep=lambda _: self.rows.pop(999999, None))
 
     def test_modified_pin_historical_layout_or_selection_rejected(self):
         self.bridge.write_text('changed')
@@ -362,7 +373,7 @@ class Handshake(unittest.TestCase):
             # run_watch supplies a normal kernel fixture; replace it after its
             # first sample to exercise the live check independently of cap proof.
             def expand(_):
-                r.kernel_limits.return_value = {'pids.max': '20', 'pids.current': '1'}
+                r.kernel_limits.return_value = self.kernel('20')
             with self.assertRaisesRegex(RuntimeError, 'effective owned kernel'):
                 self.run_watch(containers=[[], [self.c], [self.c]], sleep=expand)
 
@@ -381,11 +392,284 @@ class Handshake(unittest.TestCase):
 
     def test_build_after_first_container_cannot_use_preparation_exception(self):
         def build_after_probe(_):
+            self.rows.pop(999999, None)
             self.rows[77] = dict(pid=77, ppid=0,
                 argv=['/bin/dune', 'build', '-j2', '--root', str(self.store / 'project')],
                 comm='dune', cwd=str(self.store / 'project'), os_threads=1)
         with self.assertRaisesRegex(RuntimeError, 'competing build'):
             self.run_watch(containers=[[], [self.c], []], sleep=build_after_probe)
+
+    def test_removing_pid_zero_after_live_sample_is_exit_with_explicit_gap(self):
+        terminal = copy.deepcopy(self.c)
+        terminal['State'].update(Pid=0, Running=False, Status='removing', FinishedAt='2026-11-10T00:00:01Z')
+        def finished(_):
+            self.rows.pop(999999, None)
+            self.finish.touch()
+        self.assertTrue(self.run_watch(containers=[[], [self.c], [terminal], []], sleep=finished))
+        summary = json.loads((self.out / 'summary.json').read_text())
+        self.assertEqual(summary['coverage']['partial_samples'], 1)
+        lines = [json.loads(line) for line in (self.out / 'samples.jsonl').read_text().splitlines()]
+        partial = next(x for x in lines if x.get('sample_coverage') == 'partial')
+        self.assertIsNone(partial['native_os_threads'])
+        self.assertIsNone(partial['native_runnable_threads'])
+        self.assertEqual(partial['containers'][0]['status'], 'confirmed-exit')
+
+    def test_restarted_terminal_in_ordinary_inventory_cannot_complete_watch(self):
+        terminal = copy.deepcopy(self.c)
+        terminal['State'].update(Pid=0, Running=False, Status='removing',
+            StartedAt='2026-11-10T00:00:02Z', FinishedAt='2026-11-10T00:00:03Z')
+        with self.assertRaisesRegex(RuntimeError, 'restarted: StartedAt'):
+            self.run_watch(containers=[[], [self.c], [terminal], []])
+        self.assertFalse((self.out / 'summary.json').exists())
+
+    def test_restarted_terminal_at_final_check_cannot_complete_watch(self):
+        terminal = copy.deepcopy(self.c)
+        terminal['State'].update(Pid=0, Running=False, Status='removing',
+            StartedAt='2026-11-10T00:00:02Z', FinishedAt='2026-11-10T00:00:03Z')
+        with self.assertRaisesRegex(RuntimeError, 'restarted: StartedAt'):
+            self.run_watch(containers=[[], [self.c], [], [terminal]])
+        self.assertFalse((self.out / 'summary.json').exists())
+
+    def test_same_epoch_terminal_pid_zero_is_valid_at_final_check(self):
+        terminal = copy.deepcopy(self.c)
+        terminal['State'].update(Pid=0, Running=False, Status='removing', FinishedAt='2026-11-10T00:00:01Z')
+        self.assertTrue(self.run_watch(containers=[[], [self.c], [], [terminal]]))
+        summary = json.loads((self.out / 'summary.json').read_text())
+        self.assertEqual(summary['coverage']['gaps'][-1]['reason'], 'terminal-container-at-final-check')
+
+    def test_restarted_terminal_after_ps_omission_is_rejected(self):
+        terminal = copy.deepcopy(self.c)
+        terminal['State'].update(Pid=0, Running=False, Status='removing',
+            StartedAt='2026-11-10T00:00:02Z', FinishedAt='2026-11-10T00:00:03Z')
+        with self.assertRaisesRegex(RuntimeError, 'restarted: StartedAt'):
+            self.run_watch(containers=[[], [self.c], []], inspections=[terminal])
+        self.assertFalse((self.out / 'summary.json').exists())
+
+    def test_policy_valid_fixed_contract_drift_is_rejected_in_inventory_and_final_check(self):
+        for final_check in (False, True):
+            with self.subTest(final_check=final_check):
+                terminal = copy.deepcopy(self.c)
+                terminal['State'].update(Pid=0, Running=False, Status='removing', FinishedAt='2026-11-10T00:00:01Z')
+                terminal['Config']['Env'].append('RESOURCE_MARKER=changed')
+                self.assertEqual(r.validate_container(terminal, self.store), [])
+                # Each attempt needs new append-only monitoring evidence.
+                self.out = self.root / ('drift-' + str(final_check))
+                self.out.mkdir()
+                self.finish.unlink(missing_ok=True)
+                self.rows[999999] = dict(pid=999999, ppid=0, start_ticks=456,
+                    argv=['python3'], comm='python3', os_threads=1)
+                containers = [[], [self.c], [], [terminal]] if final_check else [[], [self.c], [terminal]]
+                with self.assertRaisesRegex(RuntimeError, 'identity/resource contract changed'):
+                    self.run_watch(containers=containers)
+                self.assertFalse((self.out / 'summary.json').exists())
+
+    def test_known_auto_removal_between_ps_and_inspect_is_retained(self):
+        def finished(_):
+            self.rows.pop(999999, None)
+            self.finish.touch()
+        self.assertTrue(self.run_watch(containers=[[], [self.c], r.ContainerSnapshot(missing_ids=[self.c['Id']]), []], sleep=finished))
+        summary = json.loads((self.out / 'summary.json').read_text())
+        self.assertEqual(summary['coverage']['gaps'][0]['disposition'], 'previously-owned-removed')
+
+    def test_unknown_auto_removal_cannot_hide_unowned_container(self):
+        with self.assertRaisesRegex(RuntimeError, 'before ownership could be established'):
+            self.run_watch(containers=[[], r.ContainerSnapshot(missing_ids=['f' * 64])])
+        self.assertFalse((self.out / 'summary.json').exists())
+
+    def test_audit_missing_inspect_is_not_clear(self):
+        with patch.object(r, 'running', return_value=r.ContainerSnapshot(missing_ids=['f' * 64])), \
+             patch.object(r, 'processes', return_value={}):
+            self.assertFalse(r.audit(self.out))
+        self.assertEqual(json.loads((self.out / 'admission.json').read_text())['uninspected_container_ids'], ['f' * 64])
+
+    def test_ps_omission_of_still_running_owned_container_is_recovered(self):
+        sleeps = []
+        def finish_after_recovery(_):
+            sleeps.append(True)
+            if len(sleeps) == 2:
+                self.rows.pop(999999, None)
+                self.finish.touch()
+        self.assertTrue(self.run_watch(containers=[[], [self.c], [], [], []],
+            inspections=[self.c, None], sleep=finish_after_recovery))
+        gaps = json.loads((self.out / 'summary.json').read_text())['coverage']['gaps']
+        self.assertIn('recovered-by-direct-inspect', [g['disposition'] for g in gaps])
+
+    def test_ps_omission_cannot_hide_a_persistently_unobservable_live_root(self):
+        with self.assertRaisesRegex(RuntimeError, 'unobservable after bounded reinspection'):
+            self.run_watch(containers=[[], [self.c], []], inspections=[self.c, self.c, self.c],
+                           sleep=lambda _: self.rows.pop(999999, None))
+
+    def test_unowned_terminal_metadata_is_validated_before_exit_is_accepted(self):
+        c = copy.deepcopy(self.c)
+        c['Name'] = '/hardcaml-asic-execution-' + 'f' * 32
+        c['State'].update(Pid=0, Running=False, Status='removing', FinishedAt='2026-11-10T00:00:01Z')
+        c['Args'] = ['-I', '-B', '-c', (self.helper / 'stage_metadata_probe.py').read_text(), 'metadata-container']
+        c['Mounts'] = []
+        c['HostConfig'].update(ReadonlyRootfs=True, NetworkMode='none')
+        with self.assertRaisesRegex(RuntimeError, 'no pre-existing test-store launch'):
+            self.run_watch(containers=[[], [c]])
+        self.assertFalse((self.out / 'summary.json').exists())
+
+    def test_child_disappearance_is_unknown_task_coverage_not_zero_counts(self):
+        self.rows[88] = dict(pid=88, ppid=999999, start_ticks=88, argv=['yosys'], comm='yosys', os_threads=1)
+        def sample_tasks(row, _):
+            if row['pid'] == 88:
+                raise FileNotFoundError()
+            return [dict(tid=row['pid'], state='S', cpu_ticks=0, delta_ticks=None)]
+        def finished(_):
+            self.rows.pop(999999, None); self.rows.pop(88, None)
+            self.finish.touch()
+        self.assertTrue(self.run_watch(tasks_fn=sample_tasks, sleep=finished))
+        records = [json.loads(line) for line in (self.out / 'samples.jsonl').read_text().splitlines()]
+        child = next(x for x in records if x.get('kind') == 'process' and x['process']['pid'] == 88)
+        self.assertIsNone(child['process']['tasks'])
+        partial = next(x for x in records if x.get('sample_coverage') == 'partial')
+        self.assertIsNone(partial['native_os_threads'])
+        self.assertEqual(partial['observed_native_os_threads'], 1)
+
+    def test_recovery_preserves_competition_from_initial_snapshot(self):
+        initial = {os.getpid(): self.rows[os.getpid()],
+                   77: dict(pid=77, ppid=0, start_ticks=77, argv=['yosys'], comm='yosys', os_threads=1)}
+        own = {os.getpid(): self.rows[os.getpid()]}
+        with self.assertRaisesRegex(RuntimeError, 'competing build/native'):
+            self.run_watch(proc_snapshots=[own, own, initial, self.rows], inspections=[self.c])
+
+
+class ContainerExitRaces(unittest.TestCase):
+    def setUp(self):
+        self.cid = 'a' * 64
+        self.c = dict(Id=self.cid, Name='/hardcaml-asic-execution-' + 'b' * 32, Image=r.IMAGE,
+            Path='python3', Args=['-B', '-c', 'metadata', 'container'], Mounts=[], HostConfig=dict(PidsLimit=6), Config={},
+            State=dict(Pid=42, Running=True, Status='running', StartedAt='2026-11-10T00:00:00Z',
+                       FinishedAt='0001-01-01T00:00:00Z'))
+        self.rows = {42: dict(pid=42, ppid=0, start_ticks=100, state='S', argv=['python3'], comm='python3', os_threads=1)}
+        self.limits = {'path': '/sys/fs/cgroup/system.slice/docker-' + self.cid + '.scope',
+                       'pids.max': '6', 'pids.current': '1'}
+        self.ts = [dict(tid=42, state='S', cpu_ticks=0, delta_ticks=None)]
+        self.events, self.snapshots = [], []
+
+    def terminal(self, status='removing'):
+        c = copy.deepcopy(self.c)
+        c['State'].update(Pid=0, Running=False, Status=status, Dead=True, ExitCode=0, FinishedAt='2026-11-10T00:00:01Z')
+        return c
+
+    def observe(self, initial=None, rows=None, inspections=(), proc=(), kernels=None, task_samples=None, identity=None):
+        with patch.object(r, 'inspect_container', side_effect=inspections) as inspect, \
+             patch.object(r, 'processes', side_effect=proc), \
+             patch.object(r, 'kernel_limits', side_effect=kernels or [self.limits] * 3), \
+             patch.object(r, 'tasks', side_effect=task_samples or [self.ts] * 3):
+            result = r.observe_container(initial or self.c, {} if rows is None else rows, {},
+                                         self.events.append, self.snapshots, identity)
+        return result, inspect.call_count
+
+    def test_exact_retained_removing_state_never_looks_for_pid_zero(self):
+        (c, _, limits, ts), calls = self.observe(initial=self.terminal())
+        self.assertIsNone(c)
+        self.assertIsNone(limits)
+        self.assertIsNone(ts)
+        self.assertEqual(calls, 0)
+        self.assertEqual(self.events[-1]['disposition'], 'confirmed-terminal')
+        self.assertFalse(self.events[-1]['native_counts_observed'])
+
+    def test_missing_root_reinspect_confirms_exit_or_auto_removal(self):
+        for fresh in (self.terminal('exited'), None):
+            with self.subTest(fresh=fresh):
+                result, calls = self.observe(inspections=[fresh])
+                self.assertIsNone(result[0])
+                self.assertEqual(calls, 1)
+                self.assertIn(self.events[-1]['disposition'], ('confirmed-terminal', 'confirmed-auto-removed'))
+
+    def test_missing_root_recovers_only_with_fresh_proc_kernel_and_tasks(self):
+        result, calls = self.observe(inspections=[self.c], proc=[self.rows])
+        self.assertEqual(calls, 1)
+        self.assertEqual(result[2], self.limits)
+        self.assertEqual(result[3], self.ts)
+        self.assertEqual(self.events[-1]['disposition'], 'recovered-live-root')
+
+    def test_persistent_missing_live_root_stops_after_two_reinspections(self):
+        with self.assertRaisesRegex(RuntimeError, 'unobservable after bounded reinspection'):
+            self.observe(inspections=[self.c, self.c], proc=[{}, {}])
+        self.assertEqual(sum(e['kind'] == 'container-reinspection' for e in self.events), 2)
+        self.assertEqual(self.events[-1]['disposition'], 'unresolved-live-or-unknown')
+
+    def test_created_state_is_not_misclassified_as_exit(self):
+        c = copy.deepcopy(self.c)
+        c['State'].update(Pid=0, Running=False, Status='created')
+        with self.assertRaisesRegex(RuntimeError, 'unobservable after bounded reinspection'):
+            self.observe(initial=c, inspections=[c, c], proc=[{}, {}])
+
+    def test_kernel_disappears_after_proc_snapshot_then_exit_confirmed(self):
+        result, _ = self.observe(rows=self.rows, kernels=[FileNotFoundError()],
+                                 inspections=[self.terminal()], proc=[{}])
+        self.assertIsNone(result[0])
+        self.assertEqual(self.events[-1]['disposition'], 'confirmed-terminal')
+
+    def test_root_tasks_disappear_then_exit_confirmed(self):
+        result, _ = self.observe(rows=self.rows, task_samples=[[]], inspections=[None], proc=[{}])
+        self.assertIsNone(result[0])
+
+    def test_root_task_race_can_recover_without_inventing_gap_counts(self):
+        result, _ = self.observe(rows=self.rows, task_samples=[[], self.ts], inspections=[self.c], proc=[self.rows])
+        self.assertIsNotNone(result[0])
+        self.assertEqual(self.events[-1]['disposition'], 'recovered-live-root')
+        self.assertFalse(self.events[-1]['native_counts_observed'])
+
+    def test_unreadable_still_live_root_is_not_ignored(self):
+        unreadable = {42: dict(pid=42, unreadable=True)}
+        with self.assertRaisesRegex(RuntimeError, 'unobservable after bounded reinspection'):
+            self.observe(rows=unreadable, inspections=[self.c, self.c], proc=[unreadable, unreadable])
+
+    def test_pid_reuse_and_foreign_cgroup_are_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'PID/start identity changed'):
+            self.observe(rows=self.rows, identity=(42, 99))
+        with self.assertRaisesRegex(RuntimeError, 'cgroup does not match'):
+            self.observe(rows=self.rows, kernels=[dict(self.limits, path='/sys/fs/cgroup/unrelated')])
+
+    def test_resource_or_root_identity_changes_during_reinspection_stop(self):
+        variants = []
+        c = copy.deepcopy(self.c); c['HostConfig']['PidsLimit'] = 20; variants.append(c)
+        c = copy.deepcopy(self.c); c['Id'] = 'f' * 64; variants.append(c)
+        c = copy.deepcopy(self.c); c['State']['Pid'] = 43; variants.append(c)
+        c = copy.deepcopy(self.c); c['State']['StartedAt'] = '2026-11-10T00:00:01Z'; variants.append(c)
+        for c in variants:
+            with self.subTest(c=c), self.assertRaisesRegex(RuntimeError, 'changed|restarted'):
+                self.observe(inspections=[c])
+
+    def test_restarted_terminal_during_reinspection_is_rejected(self):
+        c = self.terminal()
+        c['State']['StartedAt'] = '2026-11-10T00:00:02Z'
+        with self.assertRaisesRegex(RuntimeError, 'restarted: StartedAt'):
+            self.observe(inspections=[c])
+
+    def test_shared_identity_validator_checks_all_fixed_fields_before_terminal_state(self):
+        for key in ('Id', 'Name', 'Image', 'Path', 'Args', 'Mounts', 'HostConfig', 'Config'):
+            with self.subTest(key=key):
+                c = self.terminal()
+                c[key] = {'changed': key}
+                with self.assertRaisesRegex(RuntimeError, 'identity/resource contract changed'):
+                    r.validate_inspection_identity(self.c, c)
+
+    def test_terminal_inspect_cannot_conceal_persistently_live_prior_root(self):
+        with self.assertRaisesRegex(RuntimeError, 'prior root remains live'):
+            self.observe(initial=self.terminal(), rows=self.rows, identity=(42, 100), proc=[self.rows])
+
+    def test_inspect_only_accepts_exact_confirmed_absence(self):
+        for stderr in ('Error: No such object: ' + self.cid,
+                       'Error response from daemon: No such container: ' + self.cid):
+            with patch.object(r.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '[]\n', stderr)):
+                self.assertIsNone(r.inspect_container(self.cid))
+        for stderr in ('permission denied', 'Cannot connect to Docker daemon',
+                       'Error: No such object: different-id', 'Error: No such object: ' + self.cid + '\nother error'):
+            with patch.object(r.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', stderr)):
+                with self.assertRaisesRegex(RuntimeError, 'Docker inspect'):
+                    r.inspect_container(self.cid)
+
+    def test_ps_to_inspect_removal_remains_visible_in_inventory(self):
+        with patch.object(r, 'command', return_value=self.cid), patch.object(r, 'inspect_container', return_value=None):
+            snapshot = r.running()
+        self.assertTrue(snapshot)
+        self.assertEqual(list(snapshot), [])
+        self.assertEqual(snapshot.missing_ids, [self.cid])
 
 
 class EnvelopeControls(unittest.TestCase):

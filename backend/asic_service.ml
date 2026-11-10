@@ -1356,6 +1356,107 @@ let validate_finalization_input ~key ~execution_file ~acceptance =
       "Explicit acceptance testbench top required")
 ;;
 
+(* Neither CLI4/namedflow1 nor a synthesis checkpoint implies collection support.
+   Require an explicit provider capability AND its active opt-in envelope. These
+   are queried in the same project environment as the eventual producer. *)
+let synthesis_collection_supported metadata =
+  let field = Public.field in
+  let capability =
+    field "synthesis_collection1" (field "capabilities" (field "cli_contract" metadata))
+  in
+  let expected fields value =
+    List.for_all fields ~f:(fun (key, expected) -> Poly.equal (field key value) expected)
+  in
+  expected
+    [ "schema_version", `Int 1
+    ; "profile", `String "synthesis-total-tasks-v1"
+    ; "total_container_tasks", `Int 6
+    ; "fresh_only", `Bool true
+    ; "acceptance", `Bool false
+    ; "opt_in", `String "HARDCAML_ASIC_SYNTHESIS_TASK_LIMIT=6"
+    ]
+    capability
+  && expected
+       [ "schema_version", `Int 1
+       ; "profile", `String "synthesis-total-tasks-v1"
+       ; "total_container_tasks", `Int 6
+       ; "configured_executor_max_workers", `Int 6
+       ; "reduced_usable_executor_concurrency", `Bool true
+       ]
+       (field "execution_envelope" metadata)
+;;
+
+let validate_finalization_execution
+  ~stream_id
+  ~acceptance_requested
+  ~metadata
+  ~report
+  execution
+  =
+  let field = Public.field in
+  let plan = Public.explicit_recipe_plan (field "plan" execution) in
+  let synthesis_only =
+    Poly.equal (field "schema_version" plan) (`Int 4)
+    && Poly.equal (field "stages" plan) (`List [ `String "synthesis" ])
+  in
+  let stages =
+    if synthesis_only
+    then (
+      Public.require
+        ((not acceptance_requested) && synthesis_collection_supported metadata)
+        "Synthesis collection requires explicit active provider support; acceptance is prohibited";
+      [ "synthesis" ])
+    else Public.recipe_stages (field "plan" execution)
+  in
+  Public.require
+    (Poly.equal
+       (Public.canonical_json execution)
+       (Public.canonical_json (field "execution" report))
+     && Poly.equal (field "attempt_id" execution) (`String stream_id)
+     && Poly.equal
+          (field "physical" (field "completion" report))
+          (`String (if synthesis_only then "synthesis" else "full"))
+     && Poly.equal (field "status" execution) (`String "completed")
+     && Poly.equal (field "exit_code" execution) (`Int 0)
+     && Poly.equal (field "initial_boundary" plan) `Null
+     && (match plan with
+         | `Assoc fields -> List.Assoc.mem fields "initial_boundary" ~equal:String.equal
+         | _ -> false)
+     && Poly.equal (field "stages" plan) (`List (List.map stages ~f:(fun s -> `String s))))
+    "Finalize requires an exact completed fresh supported execution";
+  let occurrences = Public.list (field "occurrences" execution) in
+  let artifacts = Public.list (field "artifacts" execution) in
+  let checkpoints = Public.list (field "checkpoints" report) in
+  Public.require
+    (List.length occurrences = List.length stages
+     && List.length artifacts = List.length stages
+     && List.length checkpoints = List.length stages)
+    "Finalize requires all selected stage publications";
+  List.iteri stages ~f:(fun i stage ->
+    let occurrence = List.nth_exn occurrences i in
+    let artifact = List.nth_exn artifacts i in
+    let reference = field "reference" (List.nth_exn checkpoints i) in
+    ignore (Public.absolute (Public.text (field "path" artifact)) : string);
+    Public.require
+      (not (String.is_empty (Public.text (field "identity" artifact))))
+      "Selected checkpoint identity is missing";
+    Public.require
+      (Poly.equal (field "action_key" occurrence) (`String ("implementation." ^ stage))
+       && Poly.equal
+            (field "occurrence_id" occurrence)
+            (`String (stream_id ^ "/implementation." ^ stage))
+       && Poly.equal (field "status" occurrence) (`String "completed")
+       && Poly.equal (field "exit_code" occurrence) (`Int 0)
+       && Poly.equal (field "boundary" artifact) (`String stage)
+       && List.for_all [ "path"; "identity"; "boundary" ] ~f:(fun key ->
+         Poly.equal (field key artifact) (field key reference)))
+      "Incomplete or mismatched selected stage evidence")
+;;
+
+module For_testing = struct
+  let validate_finalization_execution = validate_finalization_execution
+end
+
 let finalization_eligibility t p cancel (f : Finalization_stored.t) =
   let v = f.value in
   let r = find_run p v.run in
@@ -1384,6 +1485,16 @@ let finalization_eligibility t p cancel (f : Finalization_stored.t) =
          (Public.field "bundle_identity" (Public.field "methodology" report))
          (`String bundle))
       "Report bundle identity mismatch");
+  let%bind metadata =
+    if Poly.equal
+         (Public.field "physical" (Public.field "completion" report))
+         (`String "synthesis")
+    then (
+      let%map metadata = query t p cancel (invoke p Adapter.metadata) in
+      Public.metadata metadata;
+      metadata)
+    else return `Null
+  in
   let%map hash =
     In_thread.run (fun () ->
       Public.require
@@ -1391,46 +1502,12 @@ let finalization_eligibility t p cancel (f : Finalization_stored.t) =
         "Finalize requires the exact canonical execution path";
       let bytes = read_public_bounded v.execution_file (8 * 1024 * 1024) in
       let execution = Public.decode bytes in
-      let field = Public.field in
-      let stages = Public.recipe_stages (field "plan" execution) in
-      let plan = Public.explicit_recipe_plan (field "plan" execution) in
-      Public.require
-        (Poly.equal
-           (Public.canonical_json execution)
-           (Public.canonical_json (field "execution" report))
-         && Poly.equal (field "physical" (field "completion" report)) (`String "full")
-         && Poly.equal (field "status" execution) (`String "completed")
-         && Poly.equal (field "exit_code" execution) (`Int 0)
-         && Poly.equal (field "initial_boundary" plan) `Null
-         && Poly.equal
-              (field "stages" plan)
-              (`List (List.map stages ~f:(fun s -> `String s))))
-        "Finalize requires an exact completed fresh physical execution";
-      let occurrences = Public.list (field "occurrences" execution) in
-      let artifacts = Public.list (field "artifacts" execution) in
-      let checkpoints = Public.list (field "checkpoints" report) in
-      Public.require
-        (List.length occurrences = List.length stages
-         && List.length artifacts = List.length stages
-         && List.length checkpoints = List.length stages)
-        "Finalize requires all selected stage publications";
-      List.iteri stages ~f:(fun i stage ->
-        let occurrence = List.nth_exn occurrences i in
-        let artifact = List.nth_exn artifacts i in
-        let reference = field "reference" (List.nth_exn checkpoints i) in
-        Public.require
-          (Poly.equal
-             (field "action_key" occurrence)
-             (`String ("implementation." ^ stage))
-           && Poly.equal
-                (field "occurrence_id" occurrence)
-                (`String (r.reference.stream_id ^ "/implementation." ^ stage))
-           && Poly.equal (field "status" occurrence) (`String "completed")
-           && Poly.equal (field "exit_code" occurrence) (`Int 0)
-           && Poly.equal (field "boundary" artifact) (`String stage)
-           && List.for_all [ "path"; "identity"; "boundary" ] ~f:(fun key ->
-             Poly.equal (field key artifact) (field key reference)))
-          "Incomplete or mismatched selected physical evidence");
+      validate_finalization_execution
+        ~stream_id:r.reference.stream_id
+        ~acceptance_requested:v.acceptance_requested
+        ~metadata
+        ~report
+        execution;
       Public.digest bytes)
   in
   Public.require

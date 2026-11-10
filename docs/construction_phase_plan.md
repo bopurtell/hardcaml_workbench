@@ -1,7 +1,7 @@
 # Hardcaml Workbench — Demo construction plan
 
 New-session context: [cross-repository recovery checkpoint](session_checkpoint.md).
-It summarizes the ASIC PT.0–PT.8 track, paused acceptance and preservation rules
+It summarizes the ASIC PT.0–PT.8 track, acceptance and preservation rules
 without replacing this queue or the ASIC queue. Refactor continuation plans are
 grouped under [migration guides](migration_guides/README.md).
 
@@ -53,7 +53,13 @@ Backend/API/local and setup execution are not claimed; nested-budget/Git-fixture
 hardening, shared-support extraction and app-integration script migration remain
 separate follow-ups. No example or hardware/EDA execution occurred.
 
-## Active ordinary developer workflow acceptance — 2026-11-06
+## Completed ordinary developer workflow acceptance — 2026-11-10
+
+**Refactored-example closeout:** [accepted capture, receipts and limits](developer_workflow_refactored_closeout.md).
+Fresh simulation/readiness, real TUI synthesis and collection, report/check inspection
+and same-store restart pass with independent evidence/resource review. Original
+failed harness receipts remain failed; read-only continuations provide the remaining
+inspection/restart evidence without rerunning producers. No P&R or Protemu work.
 
 Owner authorized section-1 closeout: production client startup, FIFO pass/failure
 investigation, PT.8 comparison, fresh synthesis, report/check inspection and
@@ -62,17 +68,17 @@ requires durable automated TUI tests with separately identified supporting RPCs,
 one actual synthesis under the supported six-worker ceiling and no P&R.
 
 - [x] Production startup/FIFO/PT.8 workflows and exact evidence associations.
-- [ ] Fresh synthesis through the TUI and actual report/check inspection.
-- [ ] Same-store restart/reopen, independent evidence/resource review and closeout.
+- [x] Fresh synthesis through the TUI and actual report/check inspection.
+- [x] Same-store restart/reopen, independent evidence/resource review and closeout.
 
 Use only test-owned private state; existing live owner sessions/evidence remain
 unchanged. Passing metadata/preparation is not synthesis completion.
 
-Checkpoint: [phase-1 handoff](developer_workflow_acceptance_handoff.md) records
-actual simulation/TUI and simulation-restart passes. The fresh synthesis/report
-and post-synthesis restart routes remain **paused and unexecuted**, pending explicit
-resource activation, monitor integration/review and coordination with the example's
-verification refactor. Pending work is not a running background job.
+The [phase-1 handoff](developer_workflow_acceptance_handoff.md) is historical.
+Its lost pre-crash temporary store was replaced with new ownership-v1 captures,
+explicit capability support and a kernel-enforced six-total-task synthesis envelope.
+The [closeout](developer_workflow_refactored_closeout.md) is current authority for
+executed acceptance. No acceptance jobs remain running.
 
 ## Development synthesis Git-context correction — 2026-11-05
 

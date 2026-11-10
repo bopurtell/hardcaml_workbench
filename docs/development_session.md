@@ -1,5 +1,12 @@
 # One example development session: FIFO, PT.8, ASIC and waveforms
 
+**Post-refactor update, 2026-11-10:** use the example's
+[ownership-v1 continuation](../../hardcaml_asic_example/docs/migration_plans/workbench_continuation.md)
+for current source layout/new-store preparation. The old store is not automatically
+migrated. [Developer workflow closeout](developer_workflow_refactored_closeout.md)
+now records actual synthesis, collection, report/check inspection and restart on a
+new private capture. Launch commands/generations below describe the earlier session.
+
 2026-11-05. **Implemented and independently accepted in the bounded development
 scope.** This is the recommended everyday example entry point. It replaces the
 need to create another numbered demo session for each feature; all earlier

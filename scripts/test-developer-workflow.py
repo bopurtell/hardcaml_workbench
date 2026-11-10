@@ -4,6 +4,9 @@
 Run in opam switch 5.2.0+ox. Each invocation gets a NEW evidence directory.
 simulations prepares/tests/readies only; synthesis requires an external allocation;
 restart reopens the exact synthesis receipt on the same store, without a launch.
+recapture uses an explicit reviewed app pair and the stopped-daemon launcher;
+recover-collection requires that recorded transition plus collection-only admission,
+and submits no implementation. Original failed evidence is never rewritten.
 The native session harness is reused, including its real
 FIFO/PT.8 LaunchForms, waveform, A/B comparison and simulation restart checks.
 """
@@ -32,6 +35,7 @@ spec.loader.exec_module(legacy)
 resource_spec = importlib.util.spec_from_file_location('workflow_resources', HERE / 'developer-workflow-resources.py')
 resources = importlib.util.module_from_spec(resource_spec)
 resource_spec.loader.exec_module(resources)
+recovery = legacy.load('workflow_collection_recovery', 'developer_workflow_recovery.py')
 field, require, sha, sexp = legacy.field, legacy.require, legacy.sha, legacy.sexp
 CHECKS = None
 
@@ -91,11 +95,21 @@ def prepare(args, evidence):
 
 class Terminal(legacy.Terminal):
     def palette(self, title):
+        if getattr(self.session, 'inspection_only', False):
+            require(not title.startswith(('Launch ', 'Plan ASIC ', 'Finalize ', 'Simulation: Launch', 'Simulation: Rerun', 'Run ')),
+                    'inspection-only continuation cannot invoke a producer')
+        if getattr(self.session, 'recovery_only', False):
+            require(not title.startswith(('Launch ', 'Plan ASIC ', 'Finalize (accept)')),
+                    'collection recovery cannot stage or submit implementation/acceptance')
+            if title.startswith('Finalize '):
+                require(title == self.session.collection_title, 'recovery can collect only its exact original run')
         self._launching = title == 'Launch and view planned run in captured context'
+        self._collecting = title.startswith('Finalize (collect) ')
         try:
             return super().palette(title)
         finally:
             self._launching = False
+            self._collecting = False
 
     def key(self, key):
         guard_session(self.session)
@@ -108,6 +122,8 @@ class Terminal(legacy.Terminal):
             # Mark uncertainty BEFORE the write: write/capture may fail after the
             # client consumed Enter, even if palette() never returns.
             self.session.submission_possible()
+        if getattr(self, '_collecting', False) and key == b'\r' and getattr(self.session, 'recovery_only', False):
+            self.session.collection_possible()
         super().key(key)
 
     def drain(self, seconds=.3):
@@ -129,7 +145,7 @@ def pair(args, evidence):
         (evidence / name).mkdir()
     session = legacy.Session(args, evidence, args.root)
     session.state_dir = args.store / 'state'
-    workers = '6' if args.phase == 'synthesis' else '2'
+    workers = '6' if args.phase in ('synthesis', 'recover-collection') else '2'
     session.env.update(HOME=str(evidence / 'home'), XDG_CONFIG_HOME=str(evidence / 'config'),
         TMPDIR=str(evidence / 'tmp'), OMP_NUM_THREADS=workers, OPENROAD_THREADS=workers,
         _OPENLANE_MAX_CORES=workers, DUNEJOBS='2', PYTHONDONTWRITEBYTECODE='1')
@@ -271,15 +287,33 @@ def simulations(args, evidence, report):
 
 
 def focus(terminal, kind):
+    workspace = 'Testing' if kind.startswith('simulation-') else 'Overview'
     terminal.palette('Unzoom workspace')
     for index in range(32):
         terminal.palette('Zoom focused tile')
-        text = terminal.capture('focus-' + kind + '-' + str(time.time_ns()), ['Space c c commands'])
-        if len(text.splitlines()) > 1 and kind in text.splitlines()[1]:
+        terminal.capture('focus-' + kind + '-' + str(time.time_ns()), [workspace])
+        # Titles/frames may be hidden by retained presentation preferences. The
+        # actual palette zoom is asserted through its public registry identity.
+        snapshot = terminal.session.api(domain='workspace')
+        if zoomed_kind(snapshot, workspace) == kind:
             return
         terminal.palette('Unzoom workspace')
         terminal.key(b'\t')
     raise AssertionError('cannot focus actual production tile ' + kind)
+
+
+def zoomed_kind(snapshot, workspace_name):
+    workspaces = [v for v in field(snapshot, 'workspaces') if field(v, 'name') == workspace_name]
+    require(len(workspaces) == 1, 'exact named workspace for actual zoom')
+    workspace = workspaces[0]
+    zoomed = field(workspace, 'zoomed_tile')
+    if not zoomed:
+        return None
+    require(len(zoomed) == 1, 'one exact zoomed tile')
+    tiles = [v for v in field(snapshot, 'tiles') if field(v, 'id') == zoomed[0] and
+             field(v, 'workspace') == field(workspace, 'id') and field(v, 'hidden') == 'false']
+    require(len(tiles) == 1, 'zoom identifies one visible tile in this workspace')
+    return field(tiles[0], 'kind')
 
 
 def inspect_simulations(session, terminal, evidence, native_evidence, attempts):
@@ -322,7 +356,8 @@ def inspect_simulations(session, terminal, evidence, native_evidence, attempts):
 def previous(args, phase):
     require(args.previous is not None, '--previous receipt required')
     value = json.loads(args.previous.read_text())
-    require(value['status'] == 'passed' and value['phase'] == phase, 'passing prerequisite phase ' + phase)
+    phases = (phase,) if isinstance(phase, str) else phase
+    require(value['status'] == 'passed' and value['phase'] in phases, 'passing prerequisite phase ' + str(phase))
     require(value['store'] == str(args.store) and value['manifest_sha256'] == sha(args.store / 'manifest.json'),
             'resume exact same pinned store')
     require(value['identities'] == args.identities, 'same source layout, target and dependency receipt')
@@ -357,9 +392,10 @@ def enforcement(args, manifest, lease):
     return cap
 
 
-def allocation(args, manifest):
-    require(args.allow_synthesis and args.allocation is not None,
-            'synthesis requires --allow-synthesis AND coordinator/runtime --allocation JSON')
+def allocation(args, manifest, collection=None):
+    allowed = args.allow_synthesis if collection is None else args.allow_collection
+    require(allowed and args.allocation is not None,
+            'producer phase requires its explicit allow flag AND coordinator/runtime --allocation JSON')
     value = json.loads(args.allocation.read_text())
     require(value['status'] == 'activated' and value['workers'] == 6 and value['endpoint'] == 'synthesis',
             'explicit activated six-worker synthesis-only allocation')
@@ -400,6 +436,12 @@ def allocation(args, manifest):
             ready['cap_binding'] == cap['binding'] and str(ready['monitor_start_ticks']) == stat[19],
             'schema2 observer readiness binds exact verified cap and live monitor identity')
     require(not stop.exists() and not stop.is_symlink(), 'no stop request after cap verification')
+    if collection is not None:
+        for record in (value, ready):
+            require(record.get('operation_scope') == 'collection-only' and
+                    record.get('execution_file') == collection['path'] and
+                    record.get('execution_sha256') == collection['sha256'],
+                    'collection-only allocation/readiness bound to exact original execution')
     return value
 
 
@@ -504,7 +546,7 @@ def synthesis(args, evidence, report, manifest):
     report.update(status='passed', eda_jobs=1, acceptance='provider verdict only; no timing/physical/signoff claim')
 
 
-def verify_lineage(session, evidence, workflow, snapshot, report):
+def verify_lineage(session, evidence, workflow, snapshot, report, retained_jobs=None):
     prepared = field(workflow, 'prepared')[0]
     bundle = Path(field(prepared, 'bundle_directory')).resolve(strict=True)
     require(bundle.is_relative_to(session.args.store), 'fresh emitted bundle belongs to owned store')
@@ -517,7 +559,18 @@ def verify_lineage(session, evidence, workflow, snapshot, report):
     require(field(run, 'reference') == field(workflow, 'reference')[0], 'workflow exact public allocation association')
     verify_run_selection(run, field(workflow, 'intent'))
     for name in ('build_job', 'emission_job'):
-        job = field(workflow, name)[0]
+        option = field(workflow, name)
+        if not option:
+            require(retained_jobs is not None, 'source-job ownership unavailable; exact retained job evidence required')
+            path = retained_jobs / (name + '-logs.json')
+            retained = json.loads(path.read_text())
+            job = retained['job']
+            require(field(job, 'state') == 'Complete' and field(job, 'exit_status') == [['Exited', '0']],
+                    'original completed source job receipt retained')
+            save(evidence / (name + '-logs.json'), dict(retained,
+                provenance=dict(path=str(path), sha256=sha(path), observation='original invocation; runtime job handle not durable')))
+            continue
+        job = option[0]
         require(field(job, 'state') == 'Complete', 'actual source ' + name + ' complete')
         logs = session.raw('/api/v1/read-log', [('instance_id', session.metadata['instance_id']),
             ('job', field(job, 'id')), ('offset', 0), ('max_records', 1000), ('max_bytes', 262144)])
@@ -557,7 +610,7 @@ def verify_run_selection(run, intent):
             'actual synthesis uses same unmodified staged selection')
 
 
-def inspect_synthesis(session, terminal, evidence, reference, report, collect=False):
+def inspect_synthesis(session, terminal, evidence, reference, report, collect=False, existing_finalizations=None):
     guard_session(session)
     session.api(domain='asic', operation=['Refresh', reference])
     snapshot = wait(session, terminal, 'asic', lambda s: any(field(x, 'run') == reference
@@ -571,11 +624,14 @@ def inspect_synthesis(session, terminal, evidence, reference, report, collect=Fa
     if collect:
         # Report collection is the supported non-acceptance finalization path.
         # It is not another implementation run and must not request replay/signoff.
-        require(not field(snapshot, 'finalizations'), 'exactly one new report collection')
+        baseline = existing_finalizations or []
+        require(field(snapshot, 'finalizations') == baseline, 'exact retained finalization baseline before one collection')
         terminal.palette('Finalize (collect) ' + label)
-        snapshot = wait(session, terminal, 'asic', lambda s: len(field(s, 'finalizations')) == 1 and
-            field(field(s, 'finalizations')[0], 'state') in ('completed', 'failed', 'cancelled', 'interrupted'), timeout=180)
-        finalization = field(snapshot, 'finalizations')[0]
+        def completed(s):
+            fresh = recovery.fresh_collection(s, baseline, reference)
+            return fresh is not None and field(fresh, 'state') in ('completed', 'failed', 'cancelled', 'interrupted')
+        snapshot = wait(session, terminal, 'asic', completed, timeout=180)
+        finalization = recovery.fresh_collection(snapshot, baseline, reference)
         save(evidence / 'report-collection.json', finalization)
         require(field(finalization, 'state') == 'completed' and
                 field(finalization, 'acceptance_requested') == 'false', 'report collection succeeds without acceptance request')
@@ -652,12 +708,14 @@ def inspect_synthesis(session, terminal, evidence, reference, report, collect=Fa
                for t in field(workspace, 'tiles')):
         terminal.palette('Add checks tile')
     focus(terminal, 'checks')
-    terminal.capture('synthesis-checks', ['Acceptance'])
+    terminal.capture('synthesis-checks', ['Evidence: validated', *[
+        'Check ' + field(check, 'name') + ': ' + field(check, 'status')
+        for check in field(terminal_result, 'checks')]])
     report['inspection_path'] = 'TUI/PTY synthesis cells/metrics/evidence, reports catalog/open, checks tile; API exact reference/catalog bytes; direct original-file byte comparison'
 
 
 def restart(args, evidence, report):
-    prior = previous(args, 'synthesis')
+    prior = previous(args, ('synthesis', 'recover-collection', 'inspect'))
     report['prerequisite'] = dict(path=str(args.previous), sha256=sha(args.previous))
     report['reference'] = prior['reference']
     report['attempts'] = prior['attempts']
@@ -688,6 +746,7 @@ def restart(args, evidence, report):
             terminal.palette('Switch to Testing')
             suite = field(field(field(detail, 'captured'), 'selection'), 'suite')
             terminal.palette('Simulation: Reopen ' + aid + ' ' + suite)
+            focus(terminal, 'simulation-detail')
             terminal.capture('reopened-' + aid, [suite])
             for index, artifact in enumerate(field(detail, 'artifacts')):
                 artifact_bytes(session, detail, artifact, target / ('artifact-%d' % index))
@@ -744,10 +803,223 @@ def verify_stacked_display(text):
                 for index, row in enumerate(rows)), 'reopened waveform retains Stacked display preference')
 
 
+def inspection_prerequisite(args):
+    require(args.previous is not None, 'inspection-only continuation requires original failed receipt')
+    prior = json.loads(args.previous.read_text())
+    require(prior['status'] == 'failed' and prior['phase'] == 'synthesis' and prior['eda_jobs'] == 1 and
+            prior['store'] == str(args.store) and prior['manifest_sha256'] == sha(args.store / 'manifest.json') and
+            prior['identities'] == args.identities, 'inspection binds failed acceptance on exact same immutable capture')
+    require('finalization_attempt' in prior and 'summary' in prior,
+            'inspection requires already completed collection; never produces missing reports')
+    native_prerequisite(args, prior)
+    require(args.producer_summary is not None and args.producer_summary_sha256 is not None,
+            'exact passing producer resource summary required')
+    raw = args.producer_summary.read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == args.producer_summary_sha256, 'original resource summary exact bytes')
+    resource = json.loads(raw)
+    require(resource['completed'] is True and resource['seen_flow'] is True and
+            resource['runtime_ceiling_established'] is True and resource['store'] == str(args.store) and
+            resource['manifest_sha256'] == prior['manifest_sha256'] and
+            resource['cap_receipt_sha256'] == prior['resource_admission']['cap_receipt_sha256'],
+            'passing resource summary bound to exact original synthesis/collection')
+    collected = json.loads((args.previous.parent / 'report-collection.json').read_text())
+    require(field(collected, 'state') == 'completed' and field(collected, 'attempt') == [prior['finalization_attempt']] and
+            field(collected, 'run') == prior['reference'] and field(collected, 'acceptance_requested') == 'false',
+            'exact completed production TUI collection, no acceptance')
+    execution_path = Path(prior['execution']['path'])
+    require(execution_path.resolve() == execution_path and execution_path.is_relative_to(args.store) and
+            sha(execution_path) == prior['execution']['sha256'] and execution_path.read_bytes() ==
+            (args.previous.parent / 'execution-original.json').read_bytes(), 'inspection exact original execution')
+    document = json.loads(execution_path.read_bytes())
+    require(document['status'] == 'completed' and document['exit_code'] == 0 and
+            document['plan']['stages'] == ['synthesis'] and document['plan']['initial_boundary'] is None,
+            'original synthesis succeeded without physical extension')
+    original_workflow = json.loads((args.previous.parent / 'workflow.json').read_text())
+    require(field(original_workflow, 'id') == prior['workflow_id'] and field(original_workflow, 'phase') == 'Completed' and
+            field(original_workflow, 'run') == [prior['reference']], 'exact completed original workflow')
+    recovery.verify_files(json.loads((args.previous.parent / 'bundle-files.json').read_text()), args.store)
+    collection_dir = Path(prior['finalization_attempt'])
+    require(collection_dir.resolve() == collection_dir and collection_dir.is_relative_to(args.store),
+            'collection operation belongs to exact test store')
+    operation = json.loads((collection_dir / 'operation.json').read_text())
+    require(operation['status'] == 'completed' and operation['exit_code'] == 0 and operation['acceptance'] == 'not_evaluated' and
+            operation['request']['accept'] is False and operation['request']['execution'] == str(execution_path),
+            'original collector completed without acceptance')
+    sealed = {str(p): sha(p) for p in collection_dir.rglob('*') if p.is_file()}
+    for artifact in document['artifacts']:
+        path = Path(artifact['path'])
+        require(path.resolve().is_relative_to(args.store), 'original checkpoint belongs to test store')
+        sealed.update({str(p): sha(p) for p in path.rglob('*') if p.is_file()})
+    sealed[str(execution_path)] = prior['execution']['sha256']
+    return prior, original_workflow, sealed
+
+
+def restored_workflow_matches(current, original):
+    """Completed workflows persist; daemon-owned source-job handles do not."""
+    if current is None:
+        return False
+    before, after = dict(original), dict(current)
+    for name in ('build_job', 'emission_job'):
+        if after.get(name) not in ([], before.get(name)):
+            return False
+        before.pop(name, None)
+        after.pop(name, None)
+    return before == after
+
+
+def inspect_completed(args, evidence, report):
+    prior, original_workflow, sealed = inspection_prerequisite(args)
+    save(evidence / 'original-producer-files.json', sealed)
+    report.update(producer_receipt=dict(path=str(args.previous), sha256=sha(args.previous)),
+        producer_resource_summary=dict(path=str(args.producer_summary), sha256=sha(args.producer_summary)),
+        attempts=prior['attempts'], simulation_receipt=prior['simulation_receipt'],
+        simulation_receipt_sha256=prior['simulation_receipt_sha256'],
+        reference=prior['reference'], allocation_reference=prior['allocation_reference'],
+        workflow_id=prior['workflow_id'], finalization_attempt=prior['finalization_attempt'])
+    with pair(args, evidence / 'pair') as (session, terminal):
+        session.inspection_only = True
+        before = session.api(domain='asic')
+        save(evidence / 'restored-before-inspection.json', before)
+        workflow = intent_workflow(before, field(original_workflow, 'intent'))
+        require(restored_workflow_matches(workflow, original_workflow),
+                'same completed workflow; only non-durable source-job handles may be absent')
+        identities = recovery.implementation_ids(before)
+        finalizations = field(before, 'finalizations')
+        simulations_before = {field(v, 'id') for v in field(session.api(), 'attempts')}
+        for name in ('build_job', 'emission_job'):
+            original = field(original_workflow, name)
+            require(len(original) == 1 and json.loads((args.previous.parent / (name + '-logs.json')).read_text())['job'] == original[0],
+                    'retained source-job evidence matches original workflow')
+        verify_lineage(session, evidence, workflow, before, report, retained_jobs=args.previous.parent)
+        require(report['execution'] == prior['execution'], 'inspection preserves exact original execution reference')
+        inspect_synthesis(session, terminal, evidence, prior['reference'], report, collect=False)
+        after = session.api(domain='asic')
+        require(recovery.implementation_ids(after) == identities and field(after, 'finalizations') == finalizations,
+                'inspection-only continuation creates no implementation or collection')
+        require({field(v, 'id') for v in field(session.api(), 'attempts')} == simulations_before,
+                'inspection-only continuation creates no simulation attempts')
+        save(evidence / 'after-inspection.json', after)
+    recovery.verify_files(sealed, args.store)
+    prefs = {str(p.relative_to(args.store)): sha(p) for p in (args.store / 'client-state').rglob('*') if p.is_file()}
+    save(evidence / 'client-prefs-before-restart.json', prefs)
+    report.update(status='passed', eda_jobs=0, collection_jobs=0, client_prefs_before_restart=prefs,
+        provenance='read-only production TUI/API inspection of exact retained successful synthesis and collection; original failed receipt retained')
+
+
+def recapture(args, evidence, report, manifest):
+    """Only the supported stopped-daemon launcher may publish a new app capture."""
+    inputs = recovery.load_inputs(args.recovery_inputs, args.store)
+    failed, old = inputs['failed'], inputs['old_manifest']
+    require(manifest == old and sha(args.store / 'manifest.json') == failed['manifest_sha256'],
+            'recapture starts from exact failed acceptance generation')
+    before = recovery.history_files(args.store)
+    immutable = recovery.immutable_files(old)
+    save(evidence / 'history-before.json', before)
+    save(evidence / 'immutable-before.json', immutable)
+    descriptor = inputs['descriptor']
+    command(evidence, 'refresh-app-capture', [sys.executable, '-B', str(args.launcher),
+        '--root', str(args.source_root), '--store', str(args.store), 'prepare', '--refresh', '--apps-only',
+        '--synthesis-task-limit', '6', '--wb-build-root', descriptor['wb_build_root'],
+        '--expected-daemon-sha256', descriptor['new_apps']['daemon']['sha256'],
+        '--expected-client-sha256', descriptor['new_apps']['client']['sha256']], timeout=1800)
+    new = json.loads((args.store / 'manifest.json').read_text())
+    recovery.validate_transition(old, new, args.store)
+    identities = legacy.validate_capture(args.store, args.root, new)
+    require(recovery.history_files(args.store) == before, 'refresh leaves all history/preferences/results byte-identical')
+    recovery.verify_files(immutable, args.store)
+    require(sha(args.recovery_inputs) == inputs['descriptor_sha256'], 'recovery descriptor unchanged during refresh')
+    for key in ('daemon', 'client'):
+        require(new['apps'][key]['sha256'] == descriptor['new_apps'][key]['sha256'], 'exact reviewed replacement ' + key)
+    transition = dict(recovery_inputs=inputs['descriptor_path'], recovery_inputs_sha256=inputs['descriptor_sha256'],
+        old_manifest=dict(path=inputs['old_manifest_path'], sha256=failed['manifest_sha256']),
+        new_manifest=dict(path=str(Path(new['generation']) / 'manifest.json'), sha256=sha(args.store / 'manifest.json')),
+        history_files=before, immutable_files=immutable,
+        original_failure=descriptor['failed_receipt'], original_resource_summary=descriptor['resource_summary'])
+    save(evidence / 'transition.json', transition)
+    args.identities = identities
+    report.update(status='passed', eda_jobs=0, identities=identities, generation=new['generation'],
+        manifest_sha256=sha(args.store / 'manifest.json'), apps=new['apps'], inputs=new['inputs'],
+        source_files=new['source_files'], transition=dict(path=str(evidence / 'transition.json'),
+            sha256=sha(evidence / 'transition.json')), original_failed_receipt=descriptor['failed_receipt'],
+        history_and_old_capture_unchanged=True, preparation_only=True)
+    return new
+
+
+def recovery_prerequisite(args, manifest):
+    prior = previous(args, 'recapture')
+    _, transition = recovery.bound_json(prior['transition'], 'app recapture transition')
+    path = Path(transition['recovery_inputs'])
+    require(sha(path) == transition['recovery_inputs_sha256'], 'exact authorized recovery descriptor')
+    inputs = recovery.load_inputs(path, args.store, check_app_sources=False)
+    require(inputs['descriptor_sha256'] == transition['recovery_inputs_sha256'], 'descriptor bytes match recorded transition')
+    recovery.validate_transition(inputs['old_manifest'], manifest, args.store)
+    require(transition['old_manifest']['sha256'] == inputs['failed']['manifest_sha256'] and
+            transition['new_manifest']['sha256'] == sha(args.store / 'manifest.json') and
+            transition['new_manifest']['path'] == str(Path(manifest['generation']) / 'manifest.json'),
+            'exact old/new generation transition; ordinary phase binding remains strict')
+    recovery.verify_files(transition['immutable_files'], args.store)
+    require(recovery.history_files(args.store) == transition['history_files'],
+            'history/preferences/results unchanged since stopped-daemon recapture')
+    for key in ('daemon', 'client'):
+        require(manifest['apps'][key]['sha256'] == inputs['descriptor']['new_apps'][key]['sha256'],
+                'recovery uses reviewed captured ' + key)
+    return prior, inputs
+
+
+def recover_collection(args, evidence, report, manifest):
+    prior, inputs = recovery_prerequisite(args, manifest)
+    failed = inputs['failed']
+    admitted = allocation(args, manifest, collection=failed['execution'])
+    save(evidence / 'allocation.json', admitted)
+    report.update(prerequisite=dict(path=str(args.previous), sha256=sha(args.previous)),
+        original_failed_receipt=inputs['descriptor']['failed_receipt'], transition=prior['transition'],
+        original_resource_summary=inputs['descriptor']['resource_summary'],
+        attempts=failed['attempts'], simulation_receipt=failed['simulation_receipt'],
+        simulation_receipt_sha256=failed['simulation_receipt_sha256'],
+        simulation_prerequisite_manifest_sha256=failed['manifest_sha256'], reference=failed['reference'],
+        workflow_id=failed['workflow_id'], allocation_reference=failed['allocation_reference'],
+        resource_admission=dict(allocation_path=str(args.allocation), allocation_sha256=sha(args.allocation),
+            runtime_receipt=admitted['runtime_receipt'], runtime_receipt_sha256=admitted['runtime_receipt_sha256'],
+            cap_receipt=admitted['cap_receipt'], cap_receipt_sha256=admitted['cap_receipt_sha256']))
+    with pair(args, evidence / 'pair') as (session, terminal):
+        def guard():
+            require(allocation(args, manifest, collection=failed['execution']) == admitted,
+                    'immutable collection-only admission throughout recovery')
+        session.resource_guard = guard
+        session.recovery_only = True
+        session.collection_title = 'Finalize (collect) ' + field(failed['reference'], 'backend') + '/' + field(failed['reference'], 'id')
+        session.collection_possible = lambda: report.update(collection_submission_possible=True, collection_jobs=None)
+        before = session.api(domain='asic')
+        save(evidence / 'history-before-recovery.json', before)
+        active = intent_workflow(before, field(inputs['workflow'], 'intent'))
+        require(active == inputs['workflow'], 'restored exact original completed workflow before inspection')
+        baseline = field(before, 'finalizations')
+        require(baseline == [inputs['collection']], 'only the original unallocated failed collection exists')
+        identities = recovery.implementation_ids(before)
+        simulations_before = {field(v, 'id') for v in field(session.api(), 'attempts')}
+        verify_lineage(session, evidence, active, before, report)
+        require(report['execution'] == failed['execution'], 'recovery inspects exact original execution; no reimplementation')
+        inspect_synthesis(session, terminal, evidence, failed['reference'], report, collect=True,
+                          existing_finalizations=baseline)
+        guard()
+        after = session.api(domain='asic')
+        require(recovery.implementation_ids(after) == identities, 'collection recovery creates no workflow/run/launch')
+        require({field(v, 'id') for v in field(session.api(), 'attempts')} == simulations_before,
+                'collection recovery creates no simulation attempts')
+        recovery.fresh_collection(after, baseline, failed['reference'])
+        recovery.verify_files(inputs['outputs'], args.store)
+        require(sha(Path(failed['execution']['path'])) == failed['execution']['sha256'], 'original execution unchanged after collection')
+        save(evidence / 'history-after-recovery.json', after)
+    prefs = {str(p.relative_to(args.store)): sha(p) for p in (args.store / 'client-state').rglob('*') if p.is_file()}
+    save(evidence / 'client-prefs-before-restart.json', prefs)
+    report.update(status='passed', eda_jobs=0, collection_jobs=1, client_prefs_before_restart=prefs,
+        coverage='TUI/PTY exact original run Finalize (collect), inspection/reports/checks; no implementation launch')
+
+
 def main():
     global CHECKS
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('--phase', choices=('simulations', 'synthesis', 'restart'), required=True)
+    parser.add_argument('--phase', choices=('simulations', 'synthesis', 'inspect', 'recapture', 'recover-collection', 'restart'), required=True)
     parser.add_argument('--store', type=Path, required=True)
     parser.add_argument('--prepare', action='store_true')
     parser.add_argument('--owner-store', type=Path, default=EXAMPLE / '.dev/workbench-development')
@@ -761,9 +1033,13 @@ def main():
                         help='explicit opt-in passed through to future new-store preparation')
     parser.add_argument('--evidence', type=Path)
     parser.add_argument('--previous', type=Path)
+    parser.add_argument('--producer-summary', type=Path, help='passing original resource summary for inspection-only continuation')
+    parser.add_argument('--producer-summary-sha256', help='exact original resource summary hash')
     parser.add_argument('--simulation-evidence', type=Path,
                         help='reuse passing native simulation evidence on this exact store; inspect/readiness again')
     parser.add_argument('--allow-synthesis', action='store_true')
+    parser.add_argument('--allow-collection', action='store_true', help='explicit producer admission for recovery only')
+    parser.add_argument('--recovery-inputs', type=Path, help='hash-bound failed-run proof and reviewed replacement app pair')
     parser.add_argument('--allocation', type=Path)
     parser.add_argument('--synthesis-timeout', type=int, default=1800)
     args = parser.parse_args()
@@ -774,6 +1050,8 @@ def main():
             'canonical private store beneath /tmp/opencode required')
     require(not args.prepare or args.phase == 'simulations', 'prepare only before simulations')
     require(args.phase == 'synthesis' or not args.allow_synthesis, '--allow-synthesis only in synthesis phase')
+    require(args.phase == 'recover-collection' or not args.allow_collection, '--allow-collection only in recovery phase')
+    require(args.phase == 'recapture' or args.recovery_inputs is None, '--recovery-inputs only when recording recapture')
     os.umask(0o077)
     evidence = args.evidence.absolute() if args.evidence else Path(tempfile.mkdtemp(
         prefix='developer-workflow-' + args.phase + '-', dir=PRIVATE))
@@ -820,16 +1098,23 @@ def main():
         report.update(manifest_sha256=sha(args.store / 'manifest.json'), generation=manifest['generation'],
             source_files=manifest['source_files'], apps=manifest['apps'], inputs=manifest['inputs'],
             helper_sha256={str(p): sha(p) for p in
-                (Path(__file__), HERE / 'test-development-session.py', HERE / 'developer-workflow-resources.py')})
+                (Path(__file__), HERE / 'test-development-session.py', HERE / 'developer-workflow-resources.py',
+                 HERE / 'developer_workflow_recovery.py')})
         # A separate lifetime lock prevents concurrent acceptance phases on this store.
         with (args.store / 'acceptance.lock').open('a+b') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if args.phase in ('synthesis', 'restart'):
+            if args.phase in ('synthesis', 'inspect', 'recover-collection', 'restart'):
                 (evidence / 'pair').mkdir()
             if args.phase == 'simulations':
                 simulations(args, evidence, report)
             elif args.phase == 'synthesis':
                 synthesis(args, evidence, report, manifest)
+            elif args.phase == 'inspect':
+                inspect_completed(args, evidence, report)
+            elif args.phase == 'recapture':
+                manifest = recapture(args, evidence, report, manifest)
+            elif args.phase == 'recover-collection':
+                recover_collection(args, evidence, report, manifest)
             else:
                 restart(args, evidence, report)
     except BaseException:

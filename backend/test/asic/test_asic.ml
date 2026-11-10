@@ -2358,12 +2358,55 @@ let main () =
       require
         (String.equal result.state "completed" && Option.is_some result.attempt)
         "Seven-stage finalization failed eligibility/hydration";
-      require
-        (String.equal
-           (Option.value_exn (summary finalized run.id).terminal).physical_completion
-           "full")
-        "Seven-stage finalized terminal result did not hydrate";
-      Deferred.unit)
+       require
+         (String.equal
+            (Option.value_exn (summary finalized run.id).terminal).physical_completion
+            "full")
+         "Seven-stage finalized terminal result did not hydrate";
+       (* The optional synthesis route needs explicit provider support in the
+          current query environment, never inferred from CLI4 or a checkpoint. *)
+       Out_channel.write_all (Filename.concat root "synthesis-finalization") ~data:"";
+       let synthesis = create ~directory:(state_dir ^ "-synthesis-finalization") () in
+       let%bind registered =
+         handle synthesis root
+           (Register { attempt = physical_attempt; stream_id = "stream-terminal" })
+       in
+       let run = (List.hd_exn registered.runs).run in
+       let%bind loaded = settled synthesis root (Load_summary run) in
+       let execution_file = (summary loaded run.id).execution_file in
+       let finalize key acceptance =
+         Asic.Operation.Finalize { key; run; execution_file; acceptance }
+       in
+       let%bind unsupported = settled synthesis root (finalize "unsupported" None) in
+       let result snapshot key =
+         List.find_exn snapshot.Asic.Snapshot.finalizations ~f:(fun f ->
+           String.equal f.Asic.Finalization.key key)
+       in
+       require
+         (String.equal (result unsupported "unsupported").state "failed"
+          && Option.is_none (result unsupported "unsupported").attempt)
+         "Synthesis collection inferred implicit provider support";
+       Out_channel.write_all (Filename.concat root "synthesis-collection-capability") ~data:"";
+       let acceptance : Asic.Acceptance.t =
+         { support_tools = root; precheck_python = "/usr/bin/python3"
+         ; testbench = root ^ "/bench.v"; testbench_top = "top"; replay_trace = root ^ "/trace" }
+       in
+       let%bind denied = settled synthesis root (finalize "synthesis-accept" (Some acceptance)) in
+       require
+         (String.equal (result denied "synthesis-accept").state "failed"
+          && Option.is_none (result denied "synthesis-accept").attempt)
+         "Synthesis-only acceptance was admitted";
+       let%bind collected = settled synthesis root (finalize "synthesis-collect" None) in
+       require
+         (String.equal (result collected "synthesis-collect").state "completed"
+          && Option.is_some (result collected "synthesis-collect").attempt)
+         "Explicitly supported synthesis collection did not complete";
+       let terminal = Option.value_exn (summary collected run.id).terminal in
+       require
+         (String.equal terminal.physical_completion "synthesis"
+          && String.equal terminal.acceptance "not_evaluated")
+         "Synthesis collection fabricated physical completion or acceptance";
+       Deferred.unit)
 ;;
 
 let () =

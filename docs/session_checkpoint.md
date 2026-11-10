@@ -1,5 +1,13 @@
 # Session recovery checkpoint — ASIC PT.0–PT.8 and Workbench
 
+**Latest update, 2026-11-10:** refactored-example developer workflow acceptance is
+[complete in its bounded scope](developer_workflow_refactored_closeout.md): actual
+TUI synthesis/collection, report/check inspection and same-store restart passed with
+independent review. The paused acceptance and old temporary-store instructions below
+are historical; the pre-crash `/tmp` evidence was lost and fresh store04 evidence
+now owns closeout. No jobs remain running. PT.3 remains separate/pending, and broader
+test expansion remains backlogged. Read the closeout before any resume/adoption.
+
 **Snapshot: 2026-11-10. Read this first in a replacement session.** This is an
 orientation/checkpoint, not a second active implementation queue. Revalidate current
 source/status and ask which paused work to resume; do not automatically launch a

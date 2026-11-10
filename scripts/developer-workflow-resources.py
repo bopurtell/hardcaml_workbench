@@ -17,7 +17,7 @@ import sys
 import time
 
 IMAGE = 'sha256:d109140b8f17fc54f4fca998beb8124f4949404ec52e339eebd2250854a18b5a'
-GENERATION = 'ee8be18f0a5a43f1aab099ff8c4ce24f'
+GENERATION = '36205ea4748c4972877ac198356d8e44'
 DOCKER = '/usr/bin/docker'
 NATIVE = {'yosys', 'yosys-abc', 'abc', 'sta', 'openroad', 'iverilog', 'vvp', 'verilator_bin',
           'verilator', 'magic', 'netgen', 'klayout'}
@@ -108,13 +108,148 @@ def workers(rows, excluded=()):
     return result
 
 
+class ContainerSnapshot(list):
+    """A ps/inspect inventory, including IDs auto-removed between those calls."""
+    def __init__(self, containers=(), missing_ids=()):
+        super().__init__(containers)
+        self.missing_ids = list(missing_ids)
+
+    def __bool__(self):
+        return len(self) != 0 or bool(self.missing_ids)
+
+
+def inspect_container(cid):
+    # Query immutable ID, never a name that could now refer to another container.
+    p = subprocess.run([DOCKER, 'inspect', cid], capture_output=True, text=True, timeout=15)
+    if p.returncode:
+        absent = re.fullmatch(r'(?:Error response from daemon: |Error: )?No such (?:object|container): '
+                              + re.escape(cid), p.stderr.strip(), flags=re.IGNORECASE)
+        if p.returncode == 1 and absent and p.stdout.strip() in ('', '[]'):
+            return None
+        raise RuntimeError(f'Docker inspect {cid}: exit {p.returncode}: {p.stderr}')
+    value = json.loads(p.stdout)
+    if not isinstance(value, list) or len(value) != 1 or value[0].get('Id') != cid:
+        raise RuntimeError('Docker inspect returned an unexpected container identity: ' + cid)
+    return value[0]
+
+
 def running():
     ids = command([DOCKER, 'ps', '-q', '--no-trunc']).split()
-    return json.loads(command([DOCKER, 'inspect', *ids])) if ids else []
+    containers, missing = [], []
+    for cid in ids:
+        c = inspect_container(cid)
+        if c is None:
+            missing.append(cid)
+        else:
+            containers.append(c)
+    return ContainerSnapshot(containers, missing)
 
 
 def brief(container):
     return {key: container[key] for key in ('Id', 'Name', 'Image', 'State', 'Path', 'Args', 'Mounts', 'HostConfig', 'Config')}
+
+
+def validate_inspection_identity(prior, current):
+    """Validate every later inspect before interpreting its lifecycle state.
+
+    A terminal PID0 is a normal transition, but it cannot excuse a different
+    StartedAt epoch or fixed contract for the same container ID.
+    """
+    fixed = ('Id', 'Name', 'Image', 'Path', 'Args', 'Mounts', 'HostConfig', 'Config')
+    if any(current.get(k) != prior.get(k) for k in fixed):
+        raise RuntimeError('owned container identity/resource contract changed')
+    if current['State'].get('StartedAt') != prior['State'].get('StartedAt'):
+        raise RuntimeError('owned container restarted: StartedAt identity changed')
+    if (current['State'].get('Running') is True and
+            current['State'].get('Pid') != prior['State'].get('Pid')):
+        raise RuntimeError('owned container live root PID changed')
+
+
+def terminal_container(c):
+    s = c['State']
+    finished = s.get('FinishedAt', '')
+    return (s.get('Running') is False and s.get('Pid') == 0 and not s.get('Restarting')
+            and s.get('Status') in {'exited', 'dead', 'removing'}
+            and bool(finished) and not finished.startswith('0001-'))
+
+
+def ensure_prior_root_gone(identity, rows, snapshots):
+    if identity is not None:
+        pid, start = identity
+        row = rows.get(pid, {})
+        if row.get('start_ticks') == start and row.get('state') not in {'Z', 'X', 'x'}:
+            rows = processes()
+            snapshots.append(rows)
+            row = rows.get(pid, {})
+            if row.get('start_ticks') == start and row.get('state') not in {'Z', 'X', 'x'}:
+                raise RuntimeError('container terminal/removed but prior root remains live')
+    return rows
+
+
+def observe_container(c, rows, previous, emit, snapshots, expected_identity=None):
+    """Bounded reconciliation of Docker state, proc identity, kernel and root tasks.
+
+    A terminal inspect/confirmed auto-removal is an exit, not a live PID failure.
+    Missing live roots/kernel/tasks get at most two exact-ID reinspections. A
+    still-live unobservable root, restart, reused PID or contract drift is fatal.
+    Every missed observation is recorded; None never means zero native workers.
+    """
+    original = c
+    reason = 'terminal-container-in-inventory'
+    gap = False
+    candidate_identity = expected_identity
+    for attempt in range(3):
+        if c is None or terminal_container(c):
+            rows = ensure_prior_root_gone(candidate_identity, rows, snapshots)
+            emit(dict(kind='coverage-gap', container_id=original['Id'], reason=reason,
+                disposition='confirmed-auto-removed' if c is None else 'confirmed-terminal',
+                state=None if c is None else c['State'], native_counts_observed=False))
+            return None, rows, None, None
+        s = c['State']
+        live = (s.get('Running') is True and s.get('Status') == 'running'
+                and isinstance(s.get('Pid'), int) and s['Pid'] > 0
+                and not s.get('Restarting') and not s.get('Paused'))
+        row = rows.get(s.get('Pid')) if live else None
+        if row and not row.get('unreadable') and row.get('state') not in {'Z', 'X', 'x'}:
+            identity = (row['pid'], row['start_ticks'])
+            candidate_identity = identity
+            if expected_identity is not None and identity != expected_identity:
+                raise RuntimeError('owned container root PID/start identity changed: ' + original['Id'])
+            try:
+                limits = kernel_limits(row['pid'])
+                # Docker's local cgroup-v2 membership ties this proc PID to this
+                # exact container, preventing a recycled unrelated PID attribution.
+                if not any(part in {original['Id'], 'docker-' + original['Id'] + '.scope'}
+                           for part in Path(limits['path']).parts):
+                    raise RuntimeError('owned root cgroup does not match container ID')
+                if limits['pids.max'] != '6' or int(limits['pids.current']) > 6:
+                    raise RuntimeError('effective owned kernel task bound is not six')
+                ts = tasks(row, previous)
+                if not any(t['tid'] == row['pid'] for t in ts):
+                    raise FileNotFoundError('root task disappeared during sampling')
+                if gap:
+                    emit(dict(kind='coverage-gap', container_id=original['Id'], reason=reason,
+                        disposition='recovered-live-root', native_counts_observed=False))
+                return c, rows, limits, ts
+            except (FileNotFoundError, ProcessLookupError, PermissionError) as exc:
+                reason = 'root-kernel-or-task-observation-lost: ' + type(exc).__name__
+        else:
+            reason = 'live-root-missing-or-unreadable' if live else 'nonterminal-container-state-unobservable'
+        gap = True
+        if attempt == 2:
+            emit(dict(kind='coverage-gap', container_id=original['Id'], reason=reason,
+                disposition='unresolved-live-or-unknown', state=c['State'], native_counts_observed=False))
+            raise RuntimeError('owned container still running or indeterminate but root unobservable after bounded reinspection: '
+                               + original['Id'])
+        fresh = inspect_container(original['Id'])
+        emit(dict(kind='container-reinspection', container_id=original['Id'], attempt=attempt + 1,
+                  inspect=None if fresh is None else brief(fresh)))
+        if fresh is not None:
+            validate_inspection_identity(original, fresh)
+        c = fresh
+        if c is not None and not terminal_container(c):
+            rows = processes()
+            snapshots.append(rows)
 
 
 def validate_container(c, store, metadata_only=False):
@@ -368,7 +503,8 @@ let ()=
   if not (T.succeeded result) then exit 2
 '''
 CAP_PROOF_FILES = ('engine.json', 'native-launch.json', 'native-result.json', 'enforcement.json', 'native.stdout',
-                   'consumer-exit.json', 'consumer-build.json', 'consumer/probe.ml', 'build/default/probe.exe')
+                   'consumer-exit.json', 'consumer-build.json', 'consumer/probe.ml', 'build/default/probe.exe',
+                   'exit-race-check.json')
 
 
 def cap_probe(args, out):
@@ -431,11 +567,24 @@ def cap_probe(args, out):
             if inspected is None:
                 time.sleep(.05)
         save(out / 'enforcement.json', inspected)
+        live_events, live_snapshots = [], []
+        # Deliberate stale-proc fault injection against this actual quota2/cap6
+        # metadata container; recovery must use fresh exact-ID Docker/proc data.
+        live_observation = observe_container(inspected['inspect'], {}, {}, live_events.append, live_snapshots)
         stdout, stderr = proc.communicate(timeout=25)
         save(out / 'consumer-exit.json', dict(exit_code=proc.returncode, stdout=stdout, stderr=stderr,
              executable_sha256=digest(executable), source_sha256=digest(source / 'probe.ml')))
         if proc.returncode:
             raise RuntimeError('installed native transport/cgroup probe failed; no fallback')
+        exit_events, exit_snapshots = [], []
+        exited = observe_container(inspected['inspect'], processes(), {}, exit_events.append, exit_snapshots)
+        if exited[0] is not None:
+            raise RuntimeError('metadata container remains observable after successful native cleanup')
+        save(out / 'exit-race-check.json', dict(
+            kind='controlled-metadata-only-observer-reinspection', eda_launches=0,
+            injected_initial_proc_snapshot='empty', live_root_recovered=live_observation[0] is not None,
+            live_events=live_events, exit_events=exit_events, exit_confirmed=True,
+            unobserved_native_counts=None))
     finally:
         if proc.poll() is None:
             # Only this metadata consumer; its supervisor owns exact container cleanup.
@@ -513,6 +662,7 @@ def audit(out):
         image=IMAGE, competing_workers=competitors,
         running_containers=[dict(id=c['Id'], name=c['Name'], image=c['Image']) for c in containers],
         unreadable_pids=[pid for pid, r in rows.items() if r.get('unreadable')],
+        uninspected_container_ids=getattr(containers, 'missing_ids', []),
         clear=not competitors and not containers and not any(r.get('unreadable') for r in rows.values()))
     save(out / 'admission.json', result)
     return result['clear']
@@ -857,27 +1007,60 @@ def watch(args, out):
          readiness_scope='strict total-container-task<=6 profile; installed transport, HostConfig and kernel proof hash-bound; synthesis success untested'))
     known, previous, peaks = {}, {}, dict(native_os_threads=0, native_runnable_threads=0,
         native_cpu_progress_threads=0, native_processes=0, python_os_threads=0)
+    root_identities, coverage_gaps, known_inspects = {}, [], {}
+    last_live = set()
+    complete_samples = partial_samples = 0
     seen_flow = False
     flow_container = None
     seen_container = False
     started = time.monotonic()
     samples = 0
     with (out / 'samples.jsonl').open('x', buffering=1) as log:
+        sample_gaps = []
+        def emit(event):
+            event = dict(time_unix=time.time(), **event)
+            log.write(json.dumps(event) + '\n')
+            if event['kind'] == 'coverage-gap':
+                coverage_gaps.append(event)
+                sample_gaps.append(event)
         while True:
             if time.monotonic() - started > args.timeout:
                 raise RuntimeError('monitor deadline exceeded; acceptance owner must cancel')
             containers = running()
             rows = processes()
+            snapshots, sample_gaps = [rows], []
             finishing = args.finish.exists()
             if digest(manifest) != manifest_hash or digest(store / 'selected/manifest.json') != manifest_hash:
                 raise RuntimeError('selected capture changed during observation')
             if any(row.get('unreadable') for row in rows.values()):
                 raise RuntimeError('unreadable processes prevent admission accounting')
-            if finishing and containers:
-                raise RuntimeError('finish requested with running container')
             accepted = []
-            excluded = descendants(rows, os.getpid())
             native_count = runnable = progressing = native_threads = 0
+            listed_ids = {c['Id'] for c in containers} | set(getattr(containers, 'missing_ids', []))
+            for cid in last_live - listed_ids:
+                fresh = inspect_container(cid)
+                emit(dict(kind='container-reinspection', container_id=cid, reason='previous-live-container-absent-from-ps',
+                          inspect=None if fresh is None else brief(fresh)))
+                if fresh is None:
+                    ensure_prior_root_gone(root_identities.get(cid), rows, snapshots)
+                    emit(dict(kind='coverage-gap', container_id=cid, reason='previous-live-container-absent-from-ps',
+                              disposition='confirmed-auto-removed', native_counts_observed=False))
+                    accepted.append(dict(id=cid, name=known[cid], status='auto-removed', processes=None,
+                                         native_counts_observed=False))
+                else:
+                    validate_inspection_identity(known_inspects[cid], fresh)
+                    emit(dict(kind='coverage-gap', container_id=cid, reason='previous-live-container-absent-from-ps',
+                              disposition='recovered-by-direct-inspect', native_counts_observed=False))
+                    containers.append(fresh)
+            for cid in getattr(containers, 'missing_ids', []):
+                emit(dict(kind='coverage-gap', container_id=cid, reason='ps-to-inspect-auto-removal',
+                    disposition='previously-owned-removed' if cid in known else 'ownership-unestablished',
+                    native_counts_observed=False))
+                if cid not in known:
+                    raise RuntimeError('listed container disappeared before ownership could be established: ' + cid)
+                ensure_prior_root_gone(root_identities.get(cid), rows, snapshots)
+                accepted.append(dict(id=cid, name=known[cid], status='auto-removed', processes=None,
+                                     native_counts_observed=False))
             for c in containers:
                 # Mountless metadata containers are associated by the exact same-store
                 # launch receipt and pinned payload, never by their name alone.
@@ -892,31 +1075,42 @@ def watch(args, out):
                     record = launch_record(store, c['Name'].lstrip('/'), c['Args'])
                     save(out / (cid + '-inspect.json'), dict(inspect=brief(c), launch=record))
                     known[cid] = c['Name']
+                    known_inspects[cid] = c
+                else:
+                    validate_inspection_identity(known_inspects[cid], c)
                 is_flow = kind == 'flow'
                 if is_flow:
                     if flow_container is not None and flow_container != cid:
                         raise RuntimeError('second synthesis execution container in one observation')
                     flow_container = cid
                     seen_flow = True
-                if c['State']['Pid'] not in rows:
-                    raise RuntimeError('owned container root process missing from snapshot; retry with fresh observation')
-                limits = kernel_limits(c['State']['Pid'])
-                log.write(json.dumps(dict(time_unix=time.time(), kind='kernel-enforcement', container_id=cid, limits=limits)) + '\n')
-                if limits['pids.max'] != '6' or int(limits['pids.current']) > 6:
-                    raise RuntimeError('effective owned kernel task bound is not six')
-                pids = descendants(rows, c['State']['Pid'])
-                excluded |= pids
+                observed_c, sample_rows, limits, root_tasks = observe_container(
+                    c, rows, previous, emit, snapshots, root_identities.get(cid))
+                if observed_c is None:
+                    accepted.append(dict(id=cid, name=c['Name'], flow=is_flow, status='confirmed-exit',
+                        processes=None, native_counts_observed=False))
+                    continue
+                c = observed_c
+                root = c['State']['Pid']
+                root_identities[cid] = (root, sample_rows[root]['start_ticks'])
+                emit(dict(kind='kernel-enforcement', container_id=cid, limits=limits))
+                pids = descendants(sample_rows, root)
                 observed = []
                 for pid in sorted(pids):
-                    row = rows.get(pid)
+                    row = sample_rows.get(pid)
                     if row is None:
                         continue
                     if row.get('unreadable'):
                         raise RuntimeError('unreadable owned process')
                     try:
-                        ts = tasks(row, previous)
-                    except FileNotFoundError:
-                        continue
+                        ts = root_tasks if pid == root else tasks(row, previous)
+                        if not ts:
+                            raise FileNotFoundError('child tasks disappeared during sampling')
+                    except (FileNotFoundError, ProcessLookupError):
+                        ts = None
+                        emit(dict(kind='coverage-gap', container_id=cid, pid=pid,
+                            reason='child-task-sample-disappeared', disposition='partial-process-sample',
+                            native_counts_observed=False))
                     base = executable_name(row['argv'][0])
                     is_native = base in NATIVE or row['comm'] in NATIVE
                     log.write(json.dumps(dict(time_unix=time.time(), kind='process',
@@ -931,8 +1125,8 @@ def watch(args, out):
                     if is_native:
                         native_count += 1
                         native_threads += row['os_threads']
-                        runnable += sum(t['state'] == 'R' for t in ts)
-                        progressing += sum((t['delta_ticks'] or 0) > 0 for t in ts)
+                        runnable += sum(t['state'] == 'R' for t in (ts or []))
+                        progressing += sum((t['delta_ticks'] or 0) > 0 for t in (ts or []))
                         if row['os_threads'] > 6:
                             raise RuntimeError('native OS threads exceed six: ' + json.dumps(row))
                         errors = native_limits(row['argv'])
@@ -941,11 +1135,27 @@ def watch(args, out):
                         if base in {'openroad', 'magic', 'netgen', 'klayout'}:
                             raise RuntimeError('unexpected native tool in synthesis-only prefix: ' + base)
                     observed.append(dict(**row, native=is_native, tasks=ts))
-                accepted.append(dict(id=cid, name=c['Name'], flow=is_flow, processes=observed))
+                accepted.append(dict(id=cid, name=c['Name'], flow=is_flow, status='running', processes=observed))
             seen_container |= bool(accepted)
-            if len(accepted) > 1:
+            live = [c for c in accepted if c['status'] == 'running']
+            last_live = {c['id'] for c in live}
+            if finishing and live:
+                raise RuntimeError('finish requested with running container')
+            if len(live) > 1:
                 raise RuntimeError('overlapping owned containers')
-            competitors = workers(rows, excluded)
+            # Keep competition seen in EVERY proc snapshot used for recovery. A
+            # refresh must not erase an observed outside job or hide PID reuse.
+            competitors_by_identity = {}
+            for snapshot in snapshots:
+                if any(row.get('unreadable') for row in snapshot.values()):
+                    raise RuntimeError('unreadable processes prevent recovery snapshot accounting')
+                excluded = descendants(snapshot, os.getpid())
+                for pid, start in root_identities.values():
+                    if snapshot.get(pid, {}).get('start_ticks') == start:
+                        excluded |= descendants(snapshot, pid)
+                for row in workers(snapshot, excluded):
+                    competitors_by_identity[(row['pid'], row.get('start_ticks'))] = row
+            competitors = list(competitors_by_identity.values())
             preparing = [] if seen_container or finishing else preparation_workers(
                 rows, competitors, store, m['inputs']['dune'])
             competitors = [r for r in competitors if r not in preparing]
@@ -956,22 +1166,46 @@ def watch(args, out):
             for key, value in [('native_os_threads', native_threads), ('native_processes', native_count),
                                ('native_runnable_threads', runnable), ('native_cpu_progress_threads', progressing)]:
                 peaks[key] = max(peaks[key], value)
+            partial = bool(sample_gaps)
+            partial_samples += int(partial)
+            complete_samples += int(not partial)
             log.write(json.dumps(dict(time_unix=time.time(), containers=accepted,
-                 native_os_threads=native_threads, native_runnable_threads=runnable,
-                 native_cpu_progress_threads=progressing, preparing_workers=preparing,
+                 sample_coverage='partial' if partial else 'complete-at-sampling-instants',
+                 native_os_threads=None if partial else native_threads,
+                 native_runnable_threads=None if partial else runnable,
+                 native_cpu_progress_threads=None if partial else progressing,
+                 observed_native_os_threads=native_threads, preparing_workers=preparing,
                  competing_workers=competitors)) + '\n')
             samples += 1
             if finishing:
                 break
             time.sleep(args.interval)
-    if running():
-        raise RuntimeError('finish requested with container still running')
+    remaining = running()
+    if remaining:
+        with (out / 'samples.jsonl').open('a', buffering=1) as log:
+            for c in remaining:
+                if c['Id'] not in known_inspects:
+                    raise RuntimeError('finish requested with unknown container')
+                validate_inspection_identity(known_inspects[c['Id']], c)
+                kind = container_kind(c, helper, store)
+                errors = validate_container(c, store, metadata_only=kind == 'metadata')
+                if errors or c['Id'] not in known or not terminal_container(c):
+                    raise RuntimeError('finish requested with live, unknown or invalid container')
+                emit(dict(kind='coverage-gap', container_id=c['Id'], reason='terminal-container-at-final-check',
+                          disposition='confirmed-terminal', state=c['State'], native_counts_observed=False))
+            for cid in getattr(remaining, 'missing_ids', []):
+                if cid not in known:
+                    raise RuntimeError('unknown container disappeared during final check')
+                emit(dict(kind='coverage-gap', container_id=cid, reason='ps-to-inspect-auto-removal-at-final-check',
+                          disposition='previously-owned-removed', native_counts_observed=False))
     if not seen_flow:
         raise RuntimeError('finish without an observed execute_segment container')
     save(out / 'summary.json', dict(completed=True, seen_flow=seen_flow, samples=samples,
           store=str(store), manifest_sha256=manifest_hash, runtime_ceiling_established=True,
           cap_receipt=str(args.cap_receipt.resolve()), cap_receipt_sha256=cap_hash, cap_binding=cap['binding'],
          containers=known, peaks=peaks, interval_seconds=args.interval,
+         coverage=dict(complete_samples=complete_samples, partial_samples=partial_samples,
+                       gaps=coverage_gaps, peaks_scope='observed-only; no native counts inferred for coverage gaps'),
          limitations=['Sampling can miss short processes/threads and is not exhaustive peak proof.',
              'CPU-progress threads in one interval need not have run simultaneously.',
              'Python OS threads include idle executor/controller threads; not native worker count.',
