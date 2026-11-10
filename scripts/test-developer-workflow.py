@@ -4,7 +4,7 @@
 Run in opam switch 5.2.0+ox. Each invocation gets a NEW evidence directory.
 simulations prepares/tests/readies only; synthesis requires an external allocation;
 restart reopens the exact synthesis receipt on the same store, without a launch.
-The historical native session harness is imported unchanged, including its real
+The native session harness is reused, including its real
 FIFO/PT.8 LaunchForms, waveform, A/B comparison and simulation restart checks.
 """
 import argparse
@@ -26,11 +26,12 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 PRIVATE = Path('/tmp/opencode')
 EXAMPLE = HERE.parent.parent / 'hardcaml_asic_example'
-OWNER_GENERATION = 'a3553c69bfb940a4bedadeb345415b01'
-ASIC_GENERATION = 'ee3af8de9f83418b9afed9c67e473e3c'
 spec = importlib.util.spec_from_file_location('workflow_native', HERE / 'test-development-session.py')
 legacy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(legacy)
+resource_spec = importlib.util.spec_from_file_location('workflow_resources', HERE / 'developer-workflow-resources.py')
+resources = importlib.util.module_from_spec(resource_spec)
+resource_spec.loader.exec_module(resources)
 field, require, sha, sexp = legacy.field, legacy.require, legacy.sha, legacy.sexp
 CHECKS = None
 
@@ -58,7 +59,6 @@ def command(evidence, name, argv, **kwargs):
 
 def owner_snapshot(owner):
     manifest = json.loads((owner / 'manifest.json').read_text())
-    require(manifest['generation_id'] == OWNER_GENERATION, 'explicit current owner generation')
     paths = [owner / 'manifest.json', *list((owner / 'project').glob('hardcaml-workbench*.sexp'))]
     return dict(generation=manifest['generation'], hashes={str(p): sha(p) for p in paths},
                 discovery=(owner / 'discovery/daemon.sexp').read_text()
@@ -66,27 +66,55 @@ def owner_snapshot(owner):
 
 
 def prepare(args, evidence):
-    require(not args.store.exists(), '--prepare requires a NEW private store')
-    owner = json.loads((args.owner_store / 'manifest.json').read_text())
-    require(owner['generation_id'] == OWNER_GENERATION, 'owner capture identity')
-    asic = Path(owner['inputs']['asic_generation'])
-    require(asic.name == ASIC_GENERATION and asic.resolve() == asic, 'exact immutable ASIC generation')
+    require(not args.store.exists() and not args.store.is_symlink(), '--prepare requires a NEW private store')
+    require(args.asic_generation is not None and args.sdk_prefix is not None,
+            '--prepare requires explicit --asic-generation and --sdk-prefix')
+    asic = args.asic_generation.absolute()
+    require(asic.resolve(strict=True) == asic, 'exact immutable ASIC generation, not a selector')
+    sdk = args.sdk_prefix.resolve(strict=True)
+    save(evidence / 'prepare-inputs.json', dict(source_root=str(args.source_root),
+        launcher=dict(path=str(args.launcher), sha256=sha(args.launcher)),
+        asic_generation=str(asic), asic_receipt_sha256=sha(asic / 'receipt.json'),
+        sdk_prefix=str(sdk), sdk_files={str(p.relative_to(sdk)): sha(p)
+            for p in (sdk / 'lib').rglob('*') if p.is_file()}))
     build = HERE.parent / '_build_pt8_workbench'
     command(evidence, 'build-app-pair', ['flock', '/tmp/opencode/workbench-pt8-build.lock',
         'opam', 'exec', '--switch=5.2.0+ox', '--', 'dune', 'build', '--root', str(HERE.parent),
         '--build-dir', str(build), '-j2', 'daemon/main.exe', 'terminal/main.exe'], timeout=1800)
-    command(evidence, 'prepare', [sys.executable, '-B', str(args.launcher), '--store', str(args.store),
-        'prepare', '--asic-generation', str(asic), '--sdk-prefix', str(Path(owner['generation']) / 'sdk'),
+    extra = ['--synthesis-task-limit', str(args.synthesis_task_limit)] if args.synthesis_task_limit else []
+    command(evidence, 'prepare', [sys.executable, '-B', str(args.launcher), '--root', str(args.source_root),
+        '--store', str(args.store), 'prepare', '--asic-generation', str(asic), '--sdk-prefix', str(sdk),
         '--wb-build-root', str(build), '--git', '/usr/bin/git',
         '--expected-daemon-sha256', sha(build / 'default/daemon/main.exe'),
-        '--expected-client-sha256', sha(build / 'default/terminal/main.exe')], timeout=1800)
+        '--expected-client-sha256', sha(build / 'default/terminal/main.exe'), *extra], timeout=1800)
 
 
 class Terminal(legacy.Terminal):
+    def palette(self, title):
+        self._launching = title == 'Launch and view planned run in captured context'
+        try:
+            return super().palette(title)
+        finally:
+            self._launching = False
+
     def key(self, key):
+        guard_session(self.session)
+        if getattr(self, '_launching', False) and key == b'\r':
+            # Check at the actual submission key, after palette navigation delays.
+            self.session.launch_guard()
         with (self.session.evidence / 'pty-keys.jsonl').open('a') as out:
             out.write(json.dumps(dict(time_ns=time.time_ns(), bytes_hex=key.hex())) + '\n')
+        if getattr(self, '_launching', False) and key == b'\r':
+            # Mark uncertainty BEFORE the write: write/capture may fail after the
+            # client consumed Enter, even if palette() never returns.
+            self.session.submission_possible()
         super().key(key)
+
+    def drain(self, seconds=.3):
+        guard_session(self.session)
+        result = super().drain(seconds)
+        guard_session(self.session)
+        return result
 
     def search(self, title, label):
         for key in (b' ', b'c', b'c'):
@@ -113,19 +141,29 @@ def pair(args, evidence):
         terminal.capture('startup', ['connected'])
         yield session, terminal
     finally:
-        if terminal:
-            try:
-                terminal.save('last-screen', terminal.drain(.1))
-            finally:
-                terminal.close()
-        if session.process:
-            session.stop()
+        try:
+            if terminal:
+                try:
+                    terminal.save('last-screen', terminal.drain(.1))
+                finally:
+                    terminal.close()
+        finally:
+            if session.process:
+                session.stop()
+
+
+def guard_session(session):
+    guard = getattr(session, 'resource_guard', None)
+    if guard:
+        guard()
 
 
 def wait(session, terminal, domain, predicate, timeout=60):
     deadline = time.monotonic() + timeout
     while True:
+        guard_session(session)
         snapshot = session.api(domain=domain)
+        guard_session(session)
         if predicate(snapshot):
             return snapshot
         require(time.monotonic() < deadline, domain + ' deadline')
@@ -216,10 +254,10 @@ def simulations(args, evidence, report):
                 'phase 1 has zero EDA workflows/runs/launch submissions')
     manifest = json.loads((args.store / 'manifest.json').read_text())
     env = dict(os.environ, **manifest['environment'])
-    # Compile the editable root's exact _build/default target before EDA activation.
+    # Compile the companion's exact captured target before EDA activation.
     # The actual fresh workflow still executes its stock build/emission jobs later.
     command(evidence, 'prewarm-source', [str(Path(manifest['generation']) / 'tool-bin/dune'),
-        'build', '--root', str(args.root), '-j2', 'bin/project.exe'],
+        'build', '--root', str(args.root), '-j2', report['identities']['build_target']],
         cwd=args.root, env=env, timeout=1800)
     command(evidence, 'scoped-source-git', [str(Path(manifest['generation']) / 'tool-bin/git'),
         '-C', str(args.root), 'rev-parse', 'HEAD'], env=env, timeout=30)
@@ -287,7 +325,36 @@ def previous(args, phase):
     require(value['status'] == 'passed' and value['phase'] == phase, 'passing prerequisite phase ' + phase)
     require(value['store'] == str(args.store) and value['manifest_sha256'] == sha(args.store / 'manifest.json'),
             'resume exact same pinned store')
+    require(value['identities'] == args.identities, 'same source layout, target and dependency receipt')
     return value
+
+
+def native_prerequisite(args, prior):
+    path = Path(prior['simulation_receipt'])
+    raw = path.read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == prior['simulation_receipt_sha256'],
+            'original native prerequisite receipt bytes')
+    value = json.loads(raw)
+    require(value['status'] == 'passed' and value['store'] == str(args.store) and
+            value['root'] == str(args.root) and value['manifest_sha256'] == prior['manifest_sha256'] and
+            value['identities'] == args.identities and value['attempts'] == prior['attempts'],
+            'native prerequisite exact same capture and attempts')
+    return value
+
+
+def enforcement(args, manifest, lease):
+    require('cap_receipt' in lease and 'cap_receipt_sha256' in lease,
+            'separately hashed cap receipt required; lease boolean is insufficient')
+    path = Path(lease['cap_receipt'])
+    require(path.is_absolute() and path.resolve() == path, 'canonical cap receipt')
+    require(sha(path) == lease['cap_receipt_sha256'], 'exact cap receipt bytes')
+    captured = resources.capture(args.store)
+    require(captured == manifest, 'resource capture equals exact acceptance manifest')
+    # The resource owner validates installed transport + HostConfig + kernel
+    # evidence, verifier hash, freshness, provider/SDK inventory, and opt-in.
+    cap = resources.verify_cap(path, args.store, captured)
+    require(sha(path) == lease['cap_receipt_sha256'], 'cap receipt unchanged during verification')
+    return cap
 
 
 def allocation(args, manifest):
@@ -302,46 +369,110 @@ def allocation(args, manifest):
     require(value['runtime_ceiling_established'] is True and value['no_competing_eda_or_builds'] is True,
             'runtime owner establishes concrete ceiling and exclusive EDA interval')
     receipt = Path(value['runtime_receipt'])
-    require(sha(receipt) == value['runtime_receipt_sha256'], 'exact runtime-owner admission receipt')
-    os.kill(int(value['monitor_pid']), 0)
-    require(Path('/proc/%d/stat' % int(value['monitor_pid'])).read_text().rsplit(')', 1)[1].split()[19]
-            == str(value['monitor_start_ticks']), 'same live runtime monitor, not reused PID')
+    require(receipt.is_absolute() and receipt.resolve() == receipt and receipt.name == 'ready.json',
+            'runtime receipt is exact monitor ready.json')
+    raw = receipt.read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == value['runtime_receipt_sha256'],
+            'exact runtime-owner admission receipt')
+    ready = json.loads(raw)
+    require(ready.get('schema_version') == 2 and ready['ready'] is True and ready['pid'] == value['monitor_pid'] and
+            ready['store'] == str(args.store) and ready['manifest_sha256'] == value['manifest_sha256'] and
+            ready['allocation'] == value['workers'], 'monitor readiness bound to exact allocation/store')
+    stop = receipt.with_name('stop-request.json')
+    require(not stop.exists() and not stop.is_symlink(), 'runtime monitor has no stop request')
+    pid = int(value['monitor_pid'])
+    require(pid > 0, 'positive monitor PID')
+    os.kill(pid, 0)
+    stat = Path('/proc/%d/stat' % pid).read_text().rsplit(')', 1)[1].split()
+    require(stat[0] not in ('Z', 'X', 'x') and stat[19] == str(value['monitor_start_ticks']),
+            'same live runtime monitor, not zombie or reused PID')
+    if 'start_ticks' in ready:
+        require(str(ready['start_ticks']) == stat[19], 'ready receipt exact monitor start identity')
+    require(not stop.exists() and not stop.is_symlink(), 'no stop request after monitor identity check')
     require(manifest['inputs']['asic_generation'] == value['asic_generation'], 'runtime admission exact ASIC')
+    cap = enforcement(args, manifest, value)
+    require(ready['runtime_ceiling_established'] is True and
+            ready['asic_generation'] == value['asic_generation'] and ready['endpoint'] == 'synthesis' and
+            ready['workers'] == 6 and ready['profile'] == cap['binding']['profile'] and
+            ready['total_container_tasks'] == cap['binding']['total_container_tasks'] and
+            ready['image'] == cap['binding']['image'] and ready['verifier_sha256'] == sha(Path(resources.__file__)) and
+            ready['cap_receipt'] == value['cap_receipt'] and ready['cap_receipt_sha256'] == value['cap_receipt_sha256'] and
+            ready['cap_binding'] == cap['binding'] and str(ready['monitor_start_ticks']) == stat[19],
+            'schema2 observer readiness binds exact verified cap and live monitor identity')
+    require(not stop.exists() and not stop.is_symlink(), 'no stop request after cap verification')
     return value
+
+
+TERMINAL_PHASES = ('Completed', 'Failed', 'Cancelled', 'Interrupted')
+
+
+def intent_workflow(snapshot, intent):
+    matches = [w for w in field(snapshot, 'workflows') if field(w, 'intent') == intent]
+    require(len(matches) <= 1, 'at most one exact intent-bound workflow')
+    return matches[0] if matches else None
+
+
+def cancel_owned(session, terminal, evidence, intent):
+    # Reobserve and rebind immediately before cancelling. A previously assigned
+    # workflow (or an unrelated singleton) is never cancellation authority.
+    active = intent_workflow(session.api(domain='asic'), intent)
+    if active is not None and field(active, 'intent') == intent and field(active, 'phase') not in TERMINAL_PHASES:
+        save(evidence / 'cancel-response.json', session.api(domain='asic',
+            operation=['Cancel_workflow', field(active, 'id')]))
+        cancelled = wait(session, terminal, 'asic', lambda s: any(
+            field(w, 'intent') == intent and field(w, 'id') == field(active, 'id') and
+            field(w, 'phase') in TERMINAL_PHASES for w in field(s, 'workflows')), timeout=30)
+        save(evidence / 'cancel-settled.json', cancelled)
+
+
+def mark_submission(report):
+    report.update(synthesis_submission_possible=True, eda_jobs=None,
+        launch_path='TUI/PTY: Plan ASIC standard / balanced -> synthesis endpoint form -> Launch and view planned run in captured context')
 
 
 def synthesis(args, evidence, report, manifest):
     prior = previous(args, 'simulations')
+    native_prerequisite(args, prior)  # Before pair startup or any launch key.
     admitted = allocation(args, manifest)  # Before daemon/client or any launch key.
     save(evidence / 'allocation.json', admitted)
+    report['resource_admission'] = dict(allocation_path=str(args.allocation),
+        allocation_sha256=sha(args.allocation), runtime_receipt=admitted['runtime_receipt'],
+        runtime_receipt_sha256=admitted['runtime_receipt_sha256'],
+        cap_receipt=admitted['cap_receipt'], cap_receipt_sha256=admitted['cap_receipt_sha256'],
+        resource_verifier_sha256=sha(Path(resources.__file__)),
+        monitor_pid=admitted['monitor_pid'], monitor_start_ticks=admitted['monitor_start_ticks'])
     report['prerequisite'] = dict(path=str(args.previous), sha256=sha(args.previous))
     report['attempts'] = prior['attempts']
     report['simulation_receipt'] = prior['simulation_receipt']
     report['simulation_receipt_sha256'] = prior['simulation_receipt_sha256']
     active = None
     with pair(args, evidence / 'pair') as (session, terminal):
+        def guard():
+            current = allocation(args, manifest)
+            require(current == admitted, 'allocation immutable throughout this launch')
+        session.launch_guard = guard
+        session.resource_guard = guard
+        session.submission_possible = lambda: mark_submission(report)
         intent = stage(session, terminal, evidence)
         before = session.api(domain='asic')
         require(not field(before, 'workflows') and not field(before, 'runs') and not field(before, 'launches'),
                 'one new synthesis only; existing implementation requires explicit evidence recovery')
-        allocation(args, manifest)
-        # This is the ONLY synthesis submission: actual production palette Enter.
-        terminal.palette('Launch and view planned run in captured context')
-        report['synthesis_submission_entered'] = True
-        report['launch_path'] = 'TUI/PTY: Plan ASIC standard / balanced -> synthesis endpoint form -> Launch and view planned run in captured context'
         deadline = time.monotonic() + args.synthesis_timeout
         try:
+            guard()
+            # This is the ONLY synthesis submission: actual production palette Enter.
+            terminal.palette('Launch and view planned run in captured context')
+            report['synthesis_submission_entered'] = True
             while True:
-                allocation(args, manifest)
+                guard()
                 snapshot = session.api(domain='asic')
-                workflows = field(snapshot, 'workflows')
-                if workflows:
-                    require(len(workflows) == 1, 'exactly one fresh synthesis workflow')
-                    active = workflows[0]
+                report['observed_run_count'] = len(field(snapshot, 'runs'))
+                active = intent_workflow(snapshot, intent)
+                if active is not None:
                     if 'workflow_id' not in report:
                         report['workflow_id'] = field(active, 'id')
                         save(evidence / 'allocated-workflow.json', active)
-                    if field(active, 'phase') in ('Completed', 'Failed', 'Cancelled', 'Interrupted'):
+                    if field(active, 'phase') in TERMINAL_PHASES:
                         break
                 require(time.monotonic() < deadline, 'bounded synthesis workflow deadline')
                 terminal.drain(.4)
@@ -357,19 +488,12 @@ def synthesis(args, evidence, report, manifest):
             report['eda_jobs'] = 1
             verify_lineage(session, evidence, active, snapshot, report)
             inspect_synthesis(session, terminal, evidence, reference, report, collect=True)
+            guard()  # Monitor covers collection/inspection, not only implementation.
         except BaseException:
             # Only the workflow created by this invocation is eligible for cancellation.
             try:
-                if active is None:
-                    active = next((w for w in field(session.api(domain='asic'), 'workflows')
-                        if field(w, 'intent') == intent), None)
-                if active and field(active, 'phase') not in ('Completed', 'Failed', 'Cancelled', 'Interrupted'):
-                    save(evidence / 'cancel-response.json', session.api(domain='asic',
-                        operation=['Cancel_workflow', field(active, 'id')]))
-                    cancelled = wait(session, terminal, 'asic', lambda s: any(
-                        field(w, 'id') == field(active, 'id') and field(w, 'phase') in
-                        ('Completed', 'Failed', 'Cancelled', 'Interrupted') for w in field(s, 'workflows')), timeout=30)
-                    save(evidence / 'cancel-settled.json', cancelled)
+                session.resource_guard = None  # Revocation must not block cancellation/settling.
+                cancel_owned(session, terminal, evidence, intent)
             except BaseException:
                 save(evidence / 'cancel-error.json', dict(error=traceback.format_exc()))
             raise
@@ -391,8 +515,7 @@ def verify_lineage(session, evidence, workflow, snapshot, report):
     require(document['bundle_identity'] == field(prepared, 'bundle_identity'), 'emitted bundle exact identity')
     run = next(r for r in field(snapshot, 'runs') if field(r, 'run') == field(workflow, 'run')[0])
     require(field(run, 'reference') == field(workflow, 'reference')[0], 'workflow exact public allocation association')
-    require(dict(field(run, 'selection')) == dict(field(field(workflow, 'intent'), 'selection')),
-            'actual synthesis uses same unmodified staged selection')
+    verify_run_selection(run, field(workflow, 'intent'))
     for name in ('build_job', 'emission_job'):
         job = field(workflow, name)[0]
         require(field(job, 'state') == 'Complete', 'actual source ' + name + ' complete')
@@ -426,7 +549,16 @@ def verify_lineage(session, evidence, workflow, snapshot, report):
     report['prepared'] = prepared
 
 
+def verify_run_selection(run, intent):
+    option = field(run, 'selection')
+    require(isinstance(option, list) and len(option) == 1 and isinstance(option[0], list),
+            'run selection requires Some [record]')
+    require(dict(option[0]) == dict(field(intent, 'selection')),
+            'actual synthesis uses same unmodified staged selection')
+
+
 def inspect_synthesis(session, terminal, evidence, reference, report, collect=False):
+    guard_session(session)
     session.api(domain='asic', operation=['Refresh', reference])
     snapshot = wait(session, terminal, 'asic', lambda s: any(field(x, 'run') == reference
         and field(x, 'freshness') == 'Validated' for x in field(s, 'summaries')), timeout=120)
@@ -490,9 +622,11 @@ def inspect_synthesis(session, terminal, evidence, reference, report, collect=Fa
     output = evidence / 'reports'
     output.mkdir()
     for artifact in artifacts:
+        guard_session(session)
         require(field(artifact, 'terminal_attempt') == report['finalization_attempt'], 'catalog exact collection attempt')
         raw = bytearray()
         while True:
+            guard_session(session)
             offset = len(raw)
             session.api(domain='asic', operation=['Read_artifact_bytes', ['run', reference],
                 ['artifact_id', field(artifact, 'id')], ['offset', offset], ['limit', 65536]])
@@ -562,9 +696,13 @@ def restart(args, evidence, report):
             wave = next(a for a in field(detail, 'artifacts') if field(a, 'case_id') == [case]
                         and field(a, 'media_type') in ('text/vcd', 'text/x-vcd'))
             terminal.palette('Simulation: Open embedded waveform ' + field(wave, 'label'))
-            terminal.capture('restarted-wave-' + aid, ['Waveform'])
+            text = terminal.capture('restarted-wave-' + aid, ['Waveform', 'Case ' + case, field(wave, 'label')])
+            verify_stacked_display(text)
             if aid == prior['attempts'][0]:
-                terminal.capture('restarted-fifo-pins', ['Cursor 40 ticks', 'outputs.occupancy'])
+                # Cursor/filter are investigation state, not a durable reopen
+                # contract. Navigate explicitly after verifying restored display.
+                terminal.key(b':40\r/outputs.occupancy\r')
+                terminal.capture('restarted-fifo-explicit-navigation', ['Cursor 40 ticks', 'outputs.occupancy'])
             terminal.key(b'f')
             terminal.capture('restarted-fit-' + aid, ['Fit full trace'])
             terminal.key(b'q')
@@ -595,7 +733,15 @@ def restart(args, evidence, report):
                     (evidence / 'reports' / name).read_bytes(), 'restart same report bytes')
         save(evidence / 'refreshed-after-reopen.json', after)
     report.update(status='passed', eda_jobs=0,
+        waveform_restoration='exact artifact and Stacked display verified; FIFO cursor/filter explicitly navigated after reopen',
         restoration='raw restored-before-refresh receipt distinguishes cached/unverified from explicit Refresh')
+
+
+def verify_stacked_display(text):
+    rows = text.splitlines()
+    require(any('[*]' in row and index + 1 < len(rows) and
+                rows[index + 1].lstrip('│| ').startswith('= ')
+                for index, row in enumerate(rows)), 'reopened waveform retains Stacked display preference')
 
 
 def main():
@@ -606,6 +752,13 @@ def main():
     parser.add_argument('--prepare', action='store_true')
     parser.add_argument('--owner-store', type=Path, default=EXAMPLE / '.dev/workbench-development')
     parser.add_argument('--launcher', type=Path, default=EXAMPLE / 'scripts/workbench_dev.py')
+    parser.add_argument('--source-root', type=Path, default=EXAMPLE,
+                        help='exact source checkout passed to new-store preparation')
+    parser.add_argument('--asic-generation', type=Path, help='explicit immutable dependency; required for prepare')
+    parser.add_argument('--sdk-prefix', type=Path, help='explicit SDK input; required for prepare')
+    parser.add_argument('--build-target', help='optional expected target; must equal captured preparation companion')
+    parser.add_argument('--synthesis-task-limit', type=int, choices=(6,),
+                        help='explicit opt-in passed through to future new-store preparation')
     parser.add_argument('--evidence', type=Path)
     parser.add_argument('--previous', type=Path)
     parser.add_argument('--simulation-evidence', type=Path,
@@ -614,6 +767,8 @@ def main():
     parser.add_argument('--allocation', type=Path)
     parser.add_argument('--synthesis-timeout', type=int, default=1800)
     args = parser.parse_args()
+    args.source_root = args.source_root.resolve(strict=True)
+    args.launcher = args.launcher.resolve(strict=True)
     args.store = args.store.absolute()
     require(args.store.is_relative_to(PRIVATE) and args.store != PRIVATE and args.store.resolve() == args.store,
             'canonical private store beneath /tmp/opencode required')
@@ -627,27 +782,34 @@ def main():
         evidence.mkdir()  # refuse reuse, even failed attempts
     args.evidence = evidence
     print('Evidence: ' + str(evidence), flush=True)
-    report = dict(schema_version=1, status='failed', phase=args.phase, store=str(args.store),
+    report = dict(schema_version=2, status='failed', phase=args.phase, store=str(args.store),
                   argv=sys.argv, evidence=str(evidence), started_unix=time.time(), eda_jobs=0, checks=[])
     CHECKS = report['checks']
     def interrupted(signum, _frame):
         raise InterruptedError('harness interrupted by signal ' + str(signum))
     signal.signal(signal.SIGTERM, interrupted)
-    baseline = owner_snapshot(args.owner_store)
-    save(evidence / 'owner-before.json', baseline)
+    baseline = None
     manifest = None
     try:
+        baseline = owner_snapshot(args.owner_store)
+        save(evidence / 'owner-before.json', baseline)
         require(Path(os.environ.get('OPAM_SWITCH_PREFIX', '')).name == '5.2.0+ox',
                 'run under opam exec --switch=5.2.0+ox')
         if args.prepare:
             prepare(args, evidence)
         args.root = args.store / 'project'
         manifest = json.loads((args.store / 'manifest.json').read_text())
-        require(manifest['project_root'] == str(args.root), 'same owned project')
-        require(Path(manifest['inputs']['asic_generation']).name == ASIC_GENERATION, 'pinned ASIC generation')
-        require('git_context' in manifest, 'scoped native Git capture required')
-        require(all(sha(args.root / name) == digest for name, digest in manifest['source_files'].items()),
-                'editable source equals exact prepared capture; no silent source drift')
+        args.identities = legacy.validate_capture(args.store, args.root, manifest)
+        report['identities'] = args.identities
+        require(args.build_target is None or args.build_target == args.identities['build_target'],
+                'explicit expected build target equals captured companion')
+        require(args.asic_generation is None or str(args.asic_generation.absolute()) ==
+                manifest['inputs']['asic_generation'], 'explicit ASIC input matches selected capture')
+        require(args.sdk_prefix is None or str(args.sdk_prefix.resolve(strict=True)) ==
+                manifest['inputs']['sdk_prefix'], 'explicit SDK input matches selected capture')
+        require(args.synthesis_task_limit is None or
+                manifest['environment'].get('HARDCAML_ASIC_SYNTHESIS_TASK_LIMIT') == str(args.synthesis_task_limit),
+                'explicit task-limit opt-in matches selected capture')
         report['workbench_sources'] = {str(p.relative_to(HERE.parent)): sha(p)
             for dirname in ('backend', 'daemon', 'protocol', 'provider', 'terminal', 'workspaces')
             for p in (HERE.parent / dirname).rglob('*') if p.is_file() and p.suffix in ('.ml', '.mli', '.py')}
@@ -657,7 +819,8 @@ def main():
             require(sha(getattr(args, k)) == manifest['apps'][k]['sha256'], 'captured ' + k + ' bytes')
         report.update(manifest_sha256=sha(args.store / 'manifest.json'), generation=manifest['generation'],
             source_files=manifest['source_files'], apps=manifest['apps'], inputs=manifest['inputs'],
-            helper_sha256={str(p): sha(p) for p in (Path(__file__), HERE / 'test-development-session.py')})
+            helper_sha256={str(p): sha(p) for p in
+                (Path(__file__), HERE / 'test-development-session.py', HERE / 'developer-workflow-resources.py')})
         # A separate lifetime lock prevents concurrent acceptance phases on this store.
         with (args.store / 'acceptance.lock').open('a+b') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -674,21 +837,24 @@ def main():
         report['error'] = traceback.format_exc()
         raise
     finally:
-        after = owner_snapshot(args.owner_store)
-        save(evidence / 'owner-after.json', after)
-        report['owner_manifest_configs_discovery_unchanged'] = after == baseline
-        if after != baseline:
+        try:
+            if baseline is not None:
+                after = owner_snapshot(args.owner_store)
+                save(evidence / 'owner-after.json', after)
+                report['owner_manifest_configs_discovery_unchanged'] = after == baseline
+                if after != baseline:
+                    report['status'] = 'failed'
+            if manifest:
+                report['private_inputs_unchanged'] = (legacy.validate_capture(
+                    args.store, args.root, manifest) == report.get('identities'))
+                if not report['private_inputs_unchanged']:
+                    report['status'] = 'failed'
+        except BaseException:
+            report['preservation_error'] = traceback.format_exc()
             report['status'] = 'failed'
-        if manifest:
-            report['private_inputs_unchanged'] = all(sha(args.root / name) == digest
-                for name, digest in manifest['source_files'].items()) and all(
-                sha(Path(manifest['generation']) / name) == digest
-                for name, digest in manifest['captured_files'].items()) and all(
-                sha(args.root / name) == digest for name, digest in manifest['config_files'].items())
-            if not report['private_inputs_unchanged']:
-                report['status'] = 'failed'
-        report['finished_unix'] = time.time()
-        save(evidence / 'receipt.json', report)
+        finally:
+            report['finished_unix'] = time.time()
+            save(evidence / 'receipt.json', report)
     require(report['status'] == 'passed', 'acceptance phase passed')
     print('PASS ' + args.phase + ': ' + str(evidence / 'receipt.json'), flush=True)
 

@@ -13,6 +13,10 @@ to run hardware/EDA or modify the sibling example.
 
 ### Current continuation checkpoint
 
+**Owner deferral:** remaining general refactor/coverage work is cached in the
+[flow-coverage backlog](../backlog/tool-test-flow-coverage.md). Main PT.0–PT.8
+completion takes priority. Resume this migration only when reactivated.
+
 [Implemented changes and verified commands](../test_refactor_verification.md)
 supersede the original blockers and proposed-only status below:
 

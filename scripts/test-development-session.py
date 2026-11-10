@@ -47,6 +47,71 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')
 
 
+def validate_capture(store, root, manifest):
+    """Validate the selected ownership-layout capture before starting any pair.
+
+    Historical stores are deliberately not migrated by acceptance consumers.
+    The preparation companion is the authority for the source build target.
+    """
+    require(manifest.get('source_layout') == 'ownership-v1',
+            'ownership-v1 requires a NEW store; retain historical stores unchanged')
+    require(manifest['store'] == str(store) and manifest['project_root'] == str(root)
+            and root == store / 'project', 'manifest owns exact private store/root')
+    generation = Path(manifest['generation'])
+    require(generation.parent == store / 'generations' and generation.resolve() == generation,
+            'canonical generation belongs to private store')
+    require((store / 'selected').resolve() == generation and
+            (store / 'manifest.json').read_bytes() == (generation / 'manifest.json').read_bytes(),
+            'same selected immutable manifest')
+    for base, entries in ((root, manifest['source_files']), (root, manifest['config_files']),
+                          (generation, manifest['captured_files']),
+                          (Path(manifest['inputs']['asic_generation']), manifest['asic_files'])):
+        require(bool(entries), 'nonempty exact capture inventory')
+        for name, digest in entries.items():
+            path = base / name
+            require(not Path(name).is_absolute() and '..' not in Path(name).parts
+                    and path.resolve().is_relative_to(base), 'bounded capture inventory path ' + name)
+            require(sha(path) == digest, 'exact captured bytes ' + str(path))
+    asic = Path(manifest['inputs']['asic_generation'])
+    require(asic.is_absolute() and asic.resolve() == asic, 'exact immutable ASIC path')
+    require(sha(asic / 'receipt.json') == manifest['asic_receipt_sha256'], 'exact ASIC receipt bytes')
+    # Use the immutable capture's own layout/exclusion rules, not today's owner
+    # checkout or only the previously listed paths (which misses added sources).
+    helper = generation / 'source/integration/workbench/workbench_provider.py'
+    require(str(helper.relative_to(generation)) in manifest['captured_files'],
+            'captured layout helper is hash-bound')
+    probe = subprocess.run([sys.executable, '-I', '-B', '-c',
+        'import json,sys; from pathlib import Path; '
+        'sys.path.insert(0, str(Path(sys.argv[1]).parent)); '
+        'import workbench_provider as p; '
+        'print(json.dumps(dict(layout=p.SOURCE_LAYOUT, roots=list(p.SOURCE_FILES+p.SOURCE_DIRS), '
+        'files=p.inventory(sys.argv[2], p.SOURCE_FILES+p.SOURCE_DIRS), '
+        'closure=p.inventory(sys.argv[2], (".",)))))',
+        str(helper), str(root)], capture_output=True, text=True, timeout=30)
+    require(probe.returncode == 0, 'captured source inventory available: ' + probe.stderr)
+    inventory = json.loads(probe.stdout)
+    require(inventory['layout'] == manifest['source_layout'] and inventory['roots'] == manifest['source_roots'],
+            'exact captured source layout roots')
+    require(inventory['files'] == manifest['source_files'],
+            'exact authored source inventory closure; no added, removed or changed files')
+    require(inventory['closure'] == dict(manifest['source_files'], **manifest['config_files']),
+            'exact whole-project source/config closure under captured exclusions; no additional authored roots')
+    require('git_context' in manifest and manifest['max_jobs'] <= 2, 'scoped Git and max2 capture')
+    context = manifest['git_context']
+    require(sha(Path(context['real_git'])) == context['real_git_sha256'], 'exact scoped real Git')
+    config = dict(parse((root / 'hardcaml-workbench-preparation.sexp').read_text()))
+    target = config['build_target']
+    require(isinstance(target, str) and not target.startswith('-') and
+            not Path(target).is_absolute() and '..' not in Path(target).parts and target.endswith('.exe'),
+            'explicit project-relative executable build target')
+    require(str(Path(target).with_suffix('.ml')) in manifest['source_files'] and
+            str(Path(target).parent / 'dune') in manifest['source_files'],
+            'build target belongs to captured source inventory')
+    return dict(source_layout=manifest['source_layout'], build_target=target,
+                preparation_config_sha256=sha(root / 'hardcaml-workbench-preparation.sexp'),
+                asic_generation=str(asic), asic_receipt_sha256=manifest['asic_receipt_sha256'])
+
+
 class Session(native.Session):
     def start(self):
         self.log = (self.evidence / ('daemon-' + str(time.time_ns()) + '.log')).open('wb')
@@ -147,6 +212,7 @@ def run(args):
         (evidence / name).mkdir()
     binaries = {str(p): sha(p) for p in (args.daemon, args.client)}
     manifest = json.loads((args.store / 'manifest.json').read_bytes())
+    identities = validate_capture(args.store, args.root, manifest)
     for kind in ('daemon', 'client'):
         app = manifest['apps'][kind]
         check(getattr(args, kind) == Path(app['path']) and sha(getattr(args, kind)) == app['sha256'],
@@ -157,7 +223,10 @@ def run(args):
     configs = {str(p): sha(p) for p in args.root.glob('hardcaml-workbench*.sexp')}
     save(evidence / 'invocation.json', dict(argv=sys.argv, binaries=binaries,
          configs=configs, root=str(args.root), store=str(args.store), eda_jobs=0,
+         identities=identities,
          manifest=str(generation / 'manifest.json'), manifest_sha256=sha(generation / 'manifest.json')))
+    report.update(store=str(args.store), root=str(args.root), identities=identities,
+                  manifest_sha256=sha(args.store / 'manifest.json'))
     session = Session(args, evidence, args.root)
     session.state_dir = args.store / 'state'
     session.env.update(HOME=str(evidence / 'home'), XDG_CONFIG_HOME=str(evidence / 'config'),
@@ -538,18 +607,28 @@ def run(args):
         report['error'] = traceback.format_exc()
         raise
     finally:
-        if terminal:
-            try:
-                terminal.save('last-screen', terminal.drain(.1))
-            finally:
-                terminal.close()
-        if session.process:
-            session.stop()
+        try:
+            if terminal:
+                try:
+                    terminal.save('last-screen', terminal.drain(.1))
+                finally:
+                    terminal.close()
+        finally:
+            if session.process:
+                session.stop()
         report['configs_unchanged'] = all(sha(Path(p)) == h for p, h in configs.items())
         report['apps_unchanged'] = all(sha(Path(p)) == h for p, h in binaries.items())
         report['prepared_capture_unchanged'] = all(sha(generation / name) == digest for name, digest in captured.items())
         if not all(report[k] for k in ('configs_unchanged', 'apps_unchanged', 'prepared_capture_unchanged')):
             report['status'] = 'failed'
+        try:
+            report['source_and_dependency_capture_unchanged'] = (
+                validate_capture(args.store, args.root, manifest) == identities)
+            if not report['source_and_dependency_capture_unchanged']:
+                report['status'] = 'failed'
+        except BaseException:
+            report['status'] = 'failed'
+            report['preservation_error'] = traceback.format_exc()
         save(evidence / 'receipt.json', report)
     require(report['status'] == 'passed', 'native acceptance/preservation gates')
 

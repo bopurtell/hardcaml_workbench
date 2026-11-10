@@ -162,6 +162,11 @@ button/form. Existing raw keys/screens/HTTP/byte identities and failed receipts 
 
 ## 7. Parallel Workbench test-refactor checkpoint
 
+**Latest owner priority:** remaining general test refactor and expanded segmented/
+whole-flow coverage are [backlogged](backlog/tool-test-flow-coverage.md). Focus next
+on the main PT.0–PT.8 completion work and required acceptance; do not automatically
+resume test-infrastructure expansion from the historical pickup steps below.
+
 **Continuation update, 2026-11-10:** explicit nested RPC budgets, shared PTY/screen
 support and opt-in sandboxed native smoke are delivered. See
 [current verification](test_refactor_verification.md). Backend/setup passed

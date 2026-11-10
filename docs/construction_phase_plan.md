@@ -7,6 +7,11 @@ grouped under [migration guides](migration_guides/README.md).
 
 ## Tool-test refactor continuation — 2026-11-10
 
+**Owner priority update:** further general test refactoring and expanded flow
+coverage are deferred to the [backlog](backlog/tool-test-flow-coverage.md).
+Prioritize PT.0–PT.8 completion and its required acceptance; the unchecked follow-ups
+below are deferred, not the active next implementation slice.
+
 Owner authorized implementation with up to three implementation agents, a shared
 20-job ceiling and disposable scripted Git fixtures permitted; owner-checkout Git
 publication/authorship mutations remain prohibited.

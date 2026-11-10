@@ -27,6 +27,14 @@ trace streaming, responsiveness/reconnect/log retention and additional simulatio
 capabilities with explicit activation and acceptance criteria. Embedded waveform
 exploration remains deferred separately. FS1's adopted-evidence functionality is complete.
 
+## Tool-test flow coverage and runner consolidation
+
+[Deferred coverage/refactor backlog](tool-test-flow-coverage.md) preserves the
+remaining segmented and complete-flow coverage matrix, shared-support extraction,
+integration registration and bounded top-level runner. Deferred by owner on
+2026-11-10 to prioritize the main PT.0–PT.8 feature track and required acceptance.
+The delivered refactor remains in place; this is not an automatic next work item.
+
 ## Inspector usability polish
 
 The owner confirmed that Escape now responds well after the local redraw fix and
