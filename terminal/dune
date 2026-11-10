@@ -173,3 +173,23 @@
   (pps ppx_jane bonsai.ppx_bonsai))
  (lint
   (pps ppx_js_style)))
+
+; Real native terminal composition with a controlled JSON/VCD producer. Opt-in:
+; no runtest edge, nested builds, hardware simulator or external fixture inputs.
+(rule
+ (alias test-native-smoke)
+ (deps
+  (sandbox always)
+  test_waveform_handoff_pty.py
+  ../scripts/test-fs2-native.py
+  ../scripts/test-fs0.py
+  ../scripts/test-embedded-waveform.py
+  ../scripts/fixtures/fs2_wire.py
+  ../test/support/__init__.py
+  ../test/support/screen.py
+  ../test/support/terminal.py)
+ (action
+  (run python3 -B %{dep:test_waveform_handoff_pty.py}
+   --daemon %{exe:../daemon/main.exe}
+   --client %{exe:main.exe}
+   --ephemeral --timeout-seconds 180)))

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Private production daemon/PTY handoff checks; no build or simulator invocation."""
 import argparse
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import time
@@ -55,13 +57,7 @@ def provider():
     writer.emit(['Finished', 'Passed'])
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--daemon', type=Path, required=True)
-    p.add_argument('--client', type=Path, required=True)
-    args = p.parse_args()
-    args.daemon, args.client = args.daemon.resolve(), args.client.resolve()
-    evidence = Path(tempfile.mkdtemp(prefix='pt8-waveform-pty-', dir='/tmp/opencode'))
+def run(args, evidence):
     print('Evidence: ' + str(evidence), flush=True)
     native = load('handoff_native', ROOT / 'scripts/test-fs2-native.py')
     embedded = load('handoff_embedded', ROOT / 'scripts/test-embedded-waveform.py')
@@ -76,7 +72,9 @@ def main():
         ('discovery_timeout_seconds', 10), ('run_timeout_seconds', 30)]))
     session = native.Session(args, evidence, root)
     session.env.update(HOME=str(evidence / 'home'), XDG_CONFIG_HOME=str(evidence / 'config'),
-        TMPDIR=str(evidence / 'tmp'), PYTHONDONTWRITEBYTECODE='1')
+        XDG_CACHE_HOME=str(evidence / 'cache'), XDG_DATA_HOME=str(evidence / 'data'),
+        TMPDIR=str(evidence / 'tmp'), PYTHONDONTWRITEBYTECODE='1',
+        OMP_NUM_THREADS='2', OPENROAD_THREADS='2', _OPENLANE_MAX_CORES='2')
     terminal = proxy = None
     checks = []
 
@@ -162,15 +160,53 @@ def main():
         check(all(r['request']['artifact_id'].endswith('-waveform') for r in proxy.records),
             'production byte requests never target result-reference JSON')
     finally:
-        if terminal:
-            terminal.close()
-        if proxy:
-            proxy.close()
-        session.stop()
-        (evidence / 'checks.json').write_text(json.dumps(checks, indent=2) + '\n')
-        (evidence / 'binaries.json').write_text(json.dumps({name: dict(path=str(getattr(args, name)),
-            sha256=hashlib.sha256(getattr(args, name).read_bytes()).hexdigest())
-            for name in ('client', 'daemon')}, indent=2) + '\n')
+        # A deadline interrupts the scenario, not its bounded cleanup. ExitStack
+        # still attempts every cleanup if a preceding callback raises.
+        signal.alarm(0)
+        with ExitStack() as cleanup:
+            def receipts():
+                (evidence / 'checks.json').write_text(json.dumps(checks, indent=2) + '\n')
+                (evidence / 'binaries.json').write_text(json.dumps({name: dict(path=str(getattr(args, name)),
+                    sha256=hashlib.sha256(getattr(args, name).read_bytes()).hexdigest())
+                    for name in ('client', 'daemon')}, indent=2) + '\n')
+            cleanup.callback(receipts)
+            cleanup.callback(session.stop)
+            if proxy:
+                cleanup.callback(proxy.close)
+            if terminal:
+                cleanup.callback(terminal.close)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--daemon', type=Path, required=True)
+    p.add_argument('--client', type=Path, required=True)
+    p.add_argument('--ephemeral', action='store_true',
+        help='remove owned state/evidence on exit (Dune); default retains historical evidence')
+    p.add_argument('--timeout-seconds', type=int, default=180)
+    args = p.parse_args()
+    if not 1 <= args.timeout_seconds <= 300:
+        p.error('--timeout-seconds must be 1..300')
+    args.daemon, args.client = args.daemon.resolve(strict=True), args.client.resolve(strict=True)
+    if not args.daemon.is_file() or not args.client.is_file():
+        p.error('--daemon and --client must name prebuilt executable files')
+    os.umask(0o077)
+
+    def deadline(*_):
+        raise TimeoutError('waveform handoff smoke budget exhausted')
+
+    previous = signal.signal(signal.SIGALRM, deadline)
+    try:
+        with ExitStack() as cleanup:
+            if args.ephemeral:
+                evidence = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix='pt8-waveform-pty-')))
+            else:
+                evidence = Path(tempfile.mkdtemp(prefix='pt8-waveform-pty-', dir='/tmp/opencode'))
+            signal.alarm(args.timeout_seconds)
+            run(args, evidence)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 if __name__ == '__main__':

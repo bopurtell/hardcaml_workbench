@@ -21,3 +21,11 @@
 (alias
  (name test-local)
  (deps (alias test/local)))
+
+(alias
+ (name test-native-smoke)
+ (deps (alias test/native-smoke)))
+
+(alias
+ (name test-support)
+ (deps (alias test/support)))

@@ -3,24 +3,20 @@
 
 Only copies Workbench *.sexp state into a unique evidence directory. The source
 state, example config and provider results are read-only inputs. Uses existing
-terminal/daemon binaries and the test-fs0 ANSI emulator (stdlib only).
+terminal/daemon binaries and the shared test-support ANSI emulator (stdlib only).
 """
 import argparse
-import fcntl
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
-import pty
-import select
 import shutil
-import struct
-import subprocess
+import sys
 import tempfile
-import termios
-import time
 import traceback
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'test'))
+from support.terminal import Terminal
 
 spec = importlib.util.spec_from_file_location('fs0', Path(__file__).with_name('test-fs0.py'))
 fs0 = importlib.util.module_from_spec(spec)
@@ -40,66 +36,6 @@ def inventory(paths):
                     item['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
                 result[str(path)] = item
     return result
-
-
-class Terminal:
-    def __init__(self, session):
-        self.session = session
-        self.data = bytearray()
-        self.master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
-        self.process = subprocess.Popen(
-            [str(session.args.client), '--connect', session.url, '--project-root', str(session.root)],
-            stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
-            env=dict(session.env, TERM='xterm-256color'))
-        os.close(slave)
-
-    def drain(self, seconds=.3):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if select.select([self.master], [], [], .05)[0]:
-                try:
-                    data = os.read(self.master, 65536)
-                except OSError:
-                    break
-                if not data:
-                    break
-                self.data.extend(data)
-        require(self.process.poll() is None, 'PTY client exited unexpectedly')
-        return fs0.terminal_screen(bytes(self.data))
-
-    def capture(self, label, expected=(), absent=()):
-        deadline = time.monotonic() + 12
-        while True:
-            text = self.drain()
-            if (all(s.casefold() in text.casefold() for s in expected)
-                    and all(s.casefold() not in text.casefold() for s in absent)):
-                break
-            if time.monotonic() >= deadline:
-                self.save(label, text)
-                raise AssertionError(f'{label}: expected {expected!r}, absent {absent!r}\n{text}')
-        self.save(label, text)
-        return text
-
-    def save(self, label, text):
-        (self.session.evidence / (label + '.txt')).write_text(text)
-        (self.session.evidence / (label + '.ansi')).write_bytes(self.data)
-
-    def palette(self, title):
-        for key in (b' ', b'c', b'c'):
-            os.write(self.master, key)
-            self.drain(.12)
-        os.write(self.master, title.encode())
-        self.capture('palette-' + str(time.time_ns()), [title])
-        os.write(self.master, b'\r')
-        self.drain(.5)
-
-    def close(self):
-        if self.process.poll() is None:
-            self.process.terminate()
-            self.process.wait(timeout=10)
-        os.close(self.master)
-        (self.session.evidence / 'pty.ansi').write_bytes(self.data)
 
 
 def exercise(args):

@@ -112,6 +112,51 @@ let%expect_test "typed actions translate without a shell" =
     |}]
 ;;
 
+let%test_unit "explicit job limits preserve action aliases and environments" =
+  List.iter [ 1; 2 ] ~f:(fun jobs ->
+    List.iter
+      [ V1.Environment_selection.Inherit_daemon; Opam_switch "project-switch" ]
+      ~f:(fun environment ->
+        List.iter
+          [ V1.Dune_action.Build, "app/@build"; Test, "checks/@run" ]
+          ~f:(fun (action, alias) ->
+            let invocation =
+              Dune_adapter.action_invocation
+                ~jobs
+                ~build_alias:"app/@build"
+                ~test_alias:"checks/@run"
+                ~root:"/work/project with spaces"
+                ~environment
+                action
+            in
+            [%test_eq: string list]
+              invocation.argv
+              (Dune_adapter.command_prefix environment
+               @ [ "dune"
+                 ; "build"
+                 ; "-j" ^ Int.to_string jobs
+                 ; "--root"
+                 ; "/work/project with spaces"
+                 ; "--no-buffer"
+                 ; alias
+                 ]))))
+;;
+
+let%test_unit "nonpositive job limits fail before an invocation is returned" =
+  List.iter [ 0; -1; Int.min_value ] ~f:(fun jobs ->
+    List.iter [ V1.Dune_action.Build; Test ] ~f:(fun action ->
+      assert (
+        match
+          Dune_adapter.action_invocation
+            ~jobs
+            ~root:"/work/project"
+            ~environment:Inherit_daemon
+            action
+        with
+        | _ -> false
+        | exception Invalid_argument _ -> true)))
+;;
+
 let%expect_test "manifest aliases and driver remain individual argv values" =
   print_s
     [%sexp

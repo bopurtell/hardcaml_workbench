@@ -1,10 +1,12 @@
 (test
  (name test_rpc)
+ (action (run %{test} -build-jobs 1))
  (libraries
   async
   cohttp-async
   core
   core_unix.command_unix
+  hardcaml_workbench_adapters
   hardcaml_workbench_protocol
   hardcaml_workbench_native_http
   hardcaml_workbench_rpc_server)

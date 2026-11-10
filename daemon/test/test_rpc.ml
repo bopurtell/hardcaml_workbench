@@ -3,6 +3,7 @@ open! Async
 open Hardcaml_workbench_protocol
 module Rpc = Hardcaml_workbench_rpc_server.Rpc_server
 module Service = Hardcaml_workbench_backend.Service
+module Dune = Hardcaml_workbench_adapters.Dune_adapter
 
 let require condition message = if not condition then raise_s [%message message]
 
@@ -245,7 +246,10 @@ let wait_for_terminal_snapshot rpc instance_id job_id =
   | `Timeout -> failwith "timed out waiting for RPC job"
 ;;
 
-let run () =
+let run ~build_jobs () =
+  (* One private project, with Build and Test awaited sequentially. Keep the
+     nested Dune allocation independent of the outer test runner's [-j]. *)
+  require (build_jobs >= 1 && build_jobs <= 2) "RPC test build jobs must be 1 or 2";
   let%bind () = test_legacy_asic_server () in
   let%bind () = test_legacy_simulation_server () in
   let instance_id = V1.Daemon_instance_id.of_string "instance-1" in
@@ -260,9 +264,19 @@ let run () =
     (Filename.concat project_root "dune")
     ~data:
       "(rule\n\
-      \ (alias all)\n\
-      \ (action (progn (echo rpc-log-marker) (echo rpc-log-tail))))\n";
-  let%bind service = Service.create ~instance_id ~log_dir ~state_dir:directory () in
+       \ (alias all)\n\
+       \ (action (progn (echo rpc-log-marker) (echo rpc-log-tail))))\n\
+        (rule (alias runtest)\n\
+       \ (action (progn (echo rpc-test-marker) (run /bin/sh -c \"exit 7\"))))\n";
+  let invocations = ref [] in
+  let action_invocation ~root ~environment action =
+    let invocation = Dune.action_invocation ~jobs:build_jobs ~root ~environment action in
+    invocations := (action, invocation) :: !invocations;
+    invocation
+  in
+  let%bind service =
+    Service.create ~action_invocation ~instance_id ~log_dir ~state_dir:directory ()
+  in
   let service = Or_error.ok_exn service in
   let rpc = Rpc.create ~application_version:"test" ~instance_id ~service in
   Monitor.protect
@@ -964,6 +978,70 @@ let run () =
               (Sexp.to_string (V1.Snapshot.Payload.sexp_of_t final_snapshot))
               ~substring:"rpc-log-marker"))
         "snapshot exposed log bytes";
+      let%bind test_body =
+        post
+          rpc
+          "/api/v1/submit-job"
+          (V1.Submit_job.Request.sexp_of_t
+             { instance_id
+             ; project = opened.project.id
+             ; action = Test
+             ; submission_key = "rpc-test"
+             })
+      in
+      let tested = decode_exn V1.Submit_job.Response.t_of_sexp test_body |> ok in
+      let%bind test_snapshot = wait_for_terminal_snapshot rpc instance_id tested.job.id in
+      let test_job =
+        List.find_exn test_snapshot.jobs ~f:(fun (job : Job.t) ->
+          Job_id.equal job.id tested.job.id)
+      in
+      require
+        (Job.State.equal test_job.state Failed)
+        "failing nested Test did not reach a terminal failure";
+      let%bind test_log_body =
+        post
+          rpc
+          "/api/v1/read-log"
+          (V1.Read_log.Request.sexp_of_t
+             { instance_id
+             ; job = tested.job.id
+             ; offset = 0
+             ; max_records = V1.max_log_records
+             ; max_bytes = V1.max_log_bytes
+             })
+      in
+      let test_log = decode_exn V1.Read_log.Response.t_of_sexp test_log_body |> ok in
+      let test_log_text =
+        test_log.records
+        |> List.map ~f:(fun record -> record.V1.Read_log.Record.data)
+        |> String.concat
+      in
+      require
+        (test_log.eof
+         && String.is_substring test_log_text ~substring:"rpc-test-marker")
+        "nested Test failed before executing its fixture action";
+      require
+        (List.length !invocations = 2)
+        "RPC actions did not each construct exactly one invocation";
+      List.iter !invocations ~f:(fun (action, invocation) ->
+        let alias =
+          match action with
+          | V1.Dune_action.Build -> "@all"
+          | Test -> "@runtest"
+        in
+        require
+          (List.equal
+             String.equal
+             invocation.argv
+             [ "dune"
+             ; "build"
+             ; "-j" ^ Int.to_string build_jobs
+             ; "--root"
+             ; project_root
+             ; "--no-buffer"
+             ; alias
+             ])
+          "RPC nested action exceeded or lost its explicit job budget");
       let%map unknown =
         Rpc.callback
           rpc
@@ -977,5 +1055,12 @@ let run () =
         "unknown version was not rejected")
 ;;
 
-let command = Command.async ~summary:"Test V1 RPC behavior" (Command.Param.return run)
+let command =
+  Command.async
+    ~summary:"Test V1 RPC behavior"
+    (let%map_open.Command build_jobs =
+       flag "-build-jobs" (optional_with_default 1 int) ~doc:"N nested Dune jobs (1 or 2)"
+     in
+     run ~build_jobs)
+;;
 let () = Command_unix.run command

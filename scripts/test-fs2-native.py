@@ -23,6 +23,8 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'fixtures'))
 from fs2_wire import sexp, record, parse
+sys.path.insert(0, str(HERE.parent / 'test'))
+from support.terminal import Terminal as SharedTerminal
 
 
 def load_module(name, filename):
@@ -33,7 +35,6 @@ def load_module(name, filename):
 
 
 fs0 = load_module('fs0', 'test-fs0.py')
-dashboard = load_module('dashboard', 'test-fs0-dashboard.py')
 field, require = fs0.field, fs0.require
 
 
@@ -101,7 +102,7 @@ class Session(fs0.Session):
         return field(snap, 'detail')[0]
 
 
-class Terminal(dashboard.Terminal):
+class Terminal(SharedTerminal):
     def key(self, key):
         os.write(self.master, key)
         self.drain(.15)
