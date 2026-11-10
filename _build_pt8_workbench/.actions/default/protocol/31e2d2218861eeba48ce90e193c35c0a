@@ -1,0 +1,1 @@
+protocol/configuration.pp.ml: Bin_prot Configuration_id Core Ppx_bench_lib Ppx_expect_runtime Ppx_inline_test_lib Ppx_module_timer_runtime Sexplib0 Stdlib Target_id

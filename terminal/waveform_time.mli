@@ -5,6 +5,8 @@ open! Core
 type scale =
   | Cells_per_tick of int
   | Ticks_per_cell of int
+  | Window_cells of { compressed : bool }
+  (** Variable original-tick intervals: use [cell_bounds], not an integer raster code. *)
 
 type cursor =
   | Left
@@ -22,6 +24,10 @@ val capacity : code:int -> columns:int -> int
     the real retained trace/window end, never extrapolation. *)
 val create : code:int -> columns:int -> start:int64 -> stop:int64 -> t
 
+(** Inclusive requested bounds, unchanged by raster width. No allocation per tick.
+    Supports [0,Int64.max_value], including a one-column viewport. *)
+val create_window : columns:int -> start:int64 -> stop:int64 -> t
+
 val columns : t -> int
 val start : t -> int64
 val stop : t -> int64
@@ -35,6 +41,9 @@ val cell_bounds : t -> column:int -> (int64 * int64) option
 (** Exact absolute physical time in the VCD's declared unit. The supported VCD magnitudes
     1/10/100 are applied as decimal digits, including above int64. *)
 val format_time : Waveform_data.timescale -> int64 -> string
+
+(** Exact decimal unit compaction, no rounding or float conversion. *)
+val format_compact : Waveform_data.timescale -> int64 -> string
 
 type label =
   { tick : int64

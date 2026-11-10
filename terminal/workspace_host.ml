@@ -1677,6 +1677,15 @@ let navigation_preferences ~project_key t =
         ~active:(Option.map t.active ~f:W.Workspace_id.to_string)
         ~workspaces
     in
+    let saved =
+      Navigation_preferences.with_testing_artifacts
+        saved
+        (List.filter_map t.testing ~f:(fun (id, (_, _, state)) ->
+           if List.exists workspaces ~f:(fun w ->
+                String.equal w.Navigation_preferences.id id)
+           then Option.map (Testing_workspace.artifact_metadata state) ~f:(fun a -> id, a)
+           else None))
+    in
     Navigation_preferences.with_workloads
       saved
       (List.filter_map registry.tiles ~f:(fun tile ->
@@ -1776,6 +1785,12 @@ let restore_navigation_selections saved t ~scope =
       else t)
   in
   List.fold (valid_navigation_workspaces saved t) ~init:t ~f:(fun t pref ->
+    let metadata =
+      List.Assoc.find
+        saved.Navigation_preferences.testing_artifacts
+        pref.id
+        ~equal:String.equal
+    in
     let workspace = W.Workspace_id.of_string pref.id in
     let members =
       Option.value_map t.registry ~default:[] ~f:(fun registry ->
@@ -1793,6 +1808,7 @@ let restore_navigation_selections saved t ~scope =
         let state =
           Option.value_map saved.attempt ~default:state ~f:(fun attempt ->
             Testing_workspace.restore_selection
+              ?metadata
               state
               ~attempt
               ~case_id:saved.case_id
@@ -4199,8 +4215,12 @@ let testing_context_commands t (tile : W.Tile.t) =
             artifact_reason
         ; placeholder
             "testing.artifact.waveform"
-            "Simulation: Open selected artifact as embedded waveform (w)"
-            artifact_reason
+            "Simulation: Open selected case VCD as embedded waveform (w)"
+            (Testing_workspace.waveform_unavailable (testing_state t tile.id))
+        ; placeholder
+            "testing.artifact.waveform-workspace"
+            "Simulation: Open selected case in Waveforms workspace (W)"
+            (Testing_workspace.waveform_unavailable (testing_state t tile.id))
         ]
     | _ -> [])
 ;;
@@ -4208,6 +4228,16 @@ let testing_context_commands t (tile : W.Tile.t) =
 (* Production selection commands, shared with catalog/keyboard regression seams. The
    caller supplies the existing submission-key allocator; promotion retains these exact
    command records and their captured identities. *)
+let waveform_eligible_for_tile t (tile : W.Tile.t) artifact =
+  let state =
+    if Testing_workspace.is_pane tile.kind
+    then testing_state t tile.id
+    else Testing_workspace.set_view Testing_workspace.empty (simulation t tile.id)
+  in
+  Option.is_some (simulation t tile.id).case_id
+  && Testing_workspace.waveform_eligible state artifact
+;;
+
 let simulation_selection_commands t (tile : W.Tile.t) ~submission_key =
   let v = simulation t tile.id in
   Option.value_map (Simulation_view.detail v) ~default:[] ~f:(fun d ->
@@ -4250,17 +4280,22 @@ let simulation_selection_commands t (tile : W.Tile.t) ~submission_key =
           ("Simulation: Open external viewer " ^ a.label)
           "trace waveform"
           (Simulation_export (a, true))
-      ; command
-          ("simulation.waveform." ^ a.id)
-          ("Simulation: Open embedded waveform " ^ a.label)
-          "vcd wave retained full-area"
-          (Simulation_waveform a)
-      ; command
-          ("simulation.waveform-workspace." ^ a.id)
-          ("Simulation: Open Waveforms workspace " ^ a.label)
-          "vcd dedicated signals waves picker logs"
-          (Simulation_waveform_workspace a)
-      ]))
+      ]
+      @
+      if waveform_eligible_for_tile t tile a
+      then
+        [ command
+            ("simulation.waveform." ^ a.id)
+            ("Simulation: Open embedded waveform " ^ a.label)
+            "vcd wave retained full-area"
+            (Simulation_waveform a)
+        ; command
+            ("simulation.waveform-workspace." ^ a.id)
+            ("Simulation: Open Waveforms workspace " ^ a.label)
+            "vcd dedicated signals waves picker logs"
+            (Simulation_waveform_workspace a)
+        ]
+      else []))
 ;;
 
 (* Shared by production keyboard routing and contextual catalog ordering. *)
@@ -4273,7 +4308,11 @@ let testing_shortcut t key =
       | 'r' -> Some "simulation.rerun-case"
       | 'f' -> Some "simulation.rerun-failed"
       | ('e' | 'v' | 'w' | 'W') when String.equal tile.kind "simulation-artifacts" ->
-        (match Testing_workspace.artifact (testing_state t tile.id) with
+        (match
+           if Char.equal key 'w' || Char.equal key 'W'
+           then Testing_workspace.waveform_artifact (testing_state t tile.id)
+           else Testing_workspace.artifact (testing_state t tile.id)
+         with
          | Some artifact ->
            Some
              ((match key with
@@ -4286,6 +4325,7 @@ let testing_shortcut t key =
            (match key with
             | 'e' -> Some "testing.artifact.export"
             | 'w' -> Some "testing.artifact.waveform"
+            | 'W' -> Some "testing.artifact.waveform-workspace"
             | _ -> None))
       | _ -> None))
 ;;
@@ -4928,14 +4968,9 @@ let input t event ~commands : t * effect =
                        (tile, Launch { submission_key; discovery_digest; selection }))
                 | (Plan_endpoint (flow, profile) | Preparation_inputs (flow, profile)) as
                   argument ->
-                  let args =
-                    String.split (String.strip p.query) ~on:' '
-                    |> List.filter ~f:(Fn.non String.is_empty)
-                  in
-                  let endpoint = List.hd_exn args
-                  and assignments = List.tl_exn args in
                   let selection =
-                    { Asic.Selection.flow; profile; endpoint; assignments }
+                    Launch_preferences.Prompt.selection p.query ~flow ~profile
+                    |> Or_error.ok_exn
                   in
                   (match argument with
                    | Preparation_inputs _ -> Select_preparation selection

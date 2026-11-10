@@ -1,0 +1,11 @@
+(executable
+ (name review)
+ (modules review)
+ (libraries core terminal_presentation hardcaml_workbench_protocol hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))
+
+(executable
+ (name grammar)
+ (modules grammar)
+ (libraries core terminal_presentation hardcaml_workbench_protocol hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))

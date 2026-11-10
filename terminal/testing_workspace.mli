@@ -28,6 +28,10 @@ val update_catalog : t -> (Simulation_catalog.t -> Simulation_catalog.t) -> t
 val selected_artifact : t -> string option
 val artifact : t -> Simulation.Artifact.t option
 val workload_artifact : t -> Simulation.Artifact.t option
+val waveform_artifact : t -> Simulation.Artifact.t option
+val waveform_unavailable : t -> string option
+val waveform_eligible : t -> Simulation.Artifact.t -> bool
+val artifact_metadata : t -> Simulation.Artifact.t option
 
 type artifact_identity =
   { id : string
@@ -37,9 +41,14 @@ type artifact_identity =
 
 (** Call once after establishing project scope, before Get/Observe. Selects the exact
     attempt even outside the history page. Subsequent detail validates saved evidence;
-    polling retains unavailable intent, and explicit selection overrides it. *)
+    polling retains unavailable intent, and explicit selection overrides it. [metadata] is
+    the original observed artifact, persisted separately from the legacy three-field
+    identity. Its attempt/case/kind/media and byte identity must still match. Legacy
+    waveform cursors cannot authorize fallback from an ineligible saved artifact; typed
+    PT8 JSON references keep their separate same-case waveform handoff. *)
 val restore_selection
-  :  t
+  :  ?metadata:Simulation.Artifact.t
+  -> t
   -> attempt:string
   -> case_id:string option
   -> artifact:artifact_identity option

@@ -1,0 +1,6 @@
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs "@install"
+   "@provider/test/runtest" {with-test}
+   "@doc" {with-doc}]
+]

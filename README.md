@@ -2,6 +2,20 @@
 
 A development workbench for inspecting, running, measuring, and debugging Hardcaml designs.
 
+**Picking up in a new session?** Read the [cross-repository checkpoint](docs/session_checkpoint.md)
+for PT.0–PT.8 status, paused acceptance and preservation constraints. Refactor
+continuations are grouped under [migration guides](docs/migration_guides/README.md).
+
+For tests **of Workbench itself**, start at [test/README.md](test/README.md) and
+[the testing guide](docs/testing.md): subsystem-owned tests, explicit suite selectors,
+and opt-in native/real-provider acceptance are distinct from hardware verification
+launched inside the application's Testing workspace.
+
+**Everyday example development:** use the [stable development session](docs/development_session.md)
+for both FIFO assertion/regression suites and PT.8 memory workloads, normal ASIC
+preparation, useful waveform Default/Fit, and retained history with explicit refresh.
+This is the recommended entry point instead of successive feature-demo sessions.
+
 **PT.8 Workloads (2026-11-05):** inspect verified workload results, capture explicit
 A/B variants and launch a fresh example workload through Testing. The
 [isolated session launch guide](docs/pt8_workloads.md) provides the server/client

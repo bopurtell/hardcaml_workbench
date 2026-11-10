@@ -42,6 +42,7 @@ type t =
   ; catalog : Simulation_catalog.t
   ; selected_artifact : string option
   ; restored_artifact : artifact_identity option
+  ; restored_metadata : S.Artifact.t option
   }
 
 let empty =
@@ -49,6 +50,7 @@ let empty =
   ; catalog = Simulation_catalog.empty
   ; selected_artifact = None
   ; restored_artifact = None
+  ; restored_metadata = None
   }
 ;;
 
@@ -71,8 +73,18 @@ let artifact t =
       String.equal saved.id a.id
       && Option.equal String.equal saved.sha256 a.sha256
       && Option.equal Int.equal saved.size a.size
-      && S.Artifact.Availability.equal a.availability Available))
+      && S.Artifact.Availability.equal a.availability Available
+      && Option.value_map t.restored_metadata ~default:true ~f:(fun original ->
+        String.equal original.id a.id
+        && String.equal original.attempt_id a.attempt_id
+        && Option.equal String.equal original.sha256 a.sha256
+        && Option.equal Int.equal original.size a.size
+        && Option.equal String.equal original.case_id a.case_id
+        && String.equal original.media_type a.media_type
+        && String.equal original.kind a.kind)))
 ;;
+
+let artifact_metadata t = Option.first_some t.restored_metadata (artifact t)
 
 let artifact_identity t =
   Option.first_some
@@ -117,6 +129,59 @@ let selection_unavailable t =
     else None
 ;;
 
+let waveform_restore_available t =
+  match t.restored_artifact with
+  | None -> true
+  | Some _ ->
+    Option.value_map (artifact t) ~default:false ~f:(fun a ->
+      (* Legacy sidecars lack role metadata. Only an admitted same-case VCD or the typed
+         PT8 JSON reference may authorize waveform selection. *)
+      Option.equal String.equal a.case_id t.view.case_id
+      && (Or_error.is_ok (Simulation_export.embedded_vcd a)
+          || Option.exists (workload_artifact t) ~f:(S.Artifact.equal a)))
+;;
+
+let waveform_eligible t (a : S.Artifact.t) =
+  match Simulation_view.detail t.view with
+  | Some d when Option.equal String.equal t.view.attempt (Some d.id) ->
+    Option.is_none (selection_unavailable t)
+    && waveform_restore_available t
+    && String.equal a.attempt_id d.id
+    && Option.value_map t.view.case_id ~default:false ~f:(fun case_id ->
+      List.mem d.captured.selection.cases case_id ~equal:String.equal
+      && List.exists d.cases ~f:(fun c -> String.equal c.case_id case_id)
+      && Option.equal String.equal a.case_id (Some case_id))
+    && Or_error.is_ok (Simulation_export.embedded_vcd a)
+    && List.exists d.artifacts ~f:(S.Artifact.equal a)
+  | _ -> false
+;;
+
+let waveform_artifact t =
+  Option.bind (Simulation_view.detail t.view) ~f:(fun d ->
+    Option.first_some
+      (Option.filter (artifact t) ~f:(waveform_eligible t))
+      (List.find d.artifacts ~f:(waveform_eligible t)))
+;;
+
+let waveform_unavailable t =
+  if Option.is_some (waveform_artifact t)
+  then None
+  else
+    Some
+      (Option.value
+         (selection_unavailable t)
+         ~default:
+           (if not (waveform_restore_available t)
+            then
+              "Saved waveform role/case unavailable or changed; explicitly select an \
+               artifact to replace saved intent"
+            else
+              "No available supported VCD for selected attempt/case. Enable waveform \
+               capture and run again (text/vcd, nonempty, <=8 MiB, verified \
+               size/SHA256). JSON results: Inspect workload result; other artifacts: \
+               Export."))
+;;
+
 let default_detail t =
   match Simulation_view.detail t.view with
   | None -> t
@@ -134,14 +199,12 @@ let default_detail t =
       List.filter d.artifacts ~f:(fun a ->
         String.equal a.attempt_id d.id
         && S.Artifact.Availability.equal a.availability Available
-        && (Option.is_none t.view.case_id
-            || Option.is_none a.case_id
-            || Option.equal String.equal a.case_id t.view.case_id))
+        && (Option.is_none a.case_id || Option.equal String.equal a.case_id case_id))
     in
     let preferred =
       Option.first_some
         (List.find available ~f:(fun a ->
-           String.is_substring (String.lowercase a.media_type) ~substring:"vcd"))
+           Or_error.is_ok (Simulation_export.embedded_vcd a)))
         (Option.first_some
            (List.find available ~f:(fun a -> Option.equal String.equal a.case_id case_id))
            (List.hd available))
@@ -180,6 +243,7 @@ let set_view t view =
     ; selected_artifact =
         (if same_attempt && same_case then t.selected_artifact else None)
     ; restored_artifact = (if same_attempt then t.restored_artifact else None)
+    ; restored_metadata = (if same_attempt then t.restored_metadata else None)
     }
   in
   let t =
@@ -197,15 +261,18 @@ let set_view t view =
 ;;
 
 let select_attempt t id =
-  set_view { t with restored_artifact = None } (Simulation_view.select t.view id)
+  set_view
+    { t with restored_artifact = None; restored_metadata = None }
+    (Simulation_view.select t.view id)
 ;;
 
-let restore_selection t ~attempt ~case_id ~artifact =
+let restore_selection ?metadata t ~attempt ~case_id ~artifact =
   let t = select_attempt t attempt in
   { t with
     view = { t.view with case_id }
   ; selected_artifact = Option.map artifact ~f:(fun a -> a.id)
   ; restored_artifact = artifact
+  ; restored_metadata = metadata
   }
 ;;
 
@@ -219,6 +286,7 @@ let select_case t id =
         view = { t.view with case_id = Some id }
       ; selected_artifact = None
       ; restored_artifact = None
+      ; restored_metadata = None
       }
   | _ -> t
 ;;
@@ -236,6 +304,7 @@ let select_artifact t id =
        { t with
          selected_artifact = Some id
        ; restored_artifact = None
+       ; restored_metadata = None
        ; view = { t.view with case_id = Option.first_some a.case_id t.view.case_id }
        })
 ;;
@@ -521,6 +590,13 @@ let rows
           :: List.map (log_lines d.job) ~f:row)
   in
   let rows = List.map (Option.to_list (selection_unavailable t)) ~f:row @ rows in
+  let rows =
+    rows
+    @
+    match pane with
+    | Artifacts | Detail -> List.map (Option.to_list (waveform_unavailable t)) ~f:row
+    | _ -> []
+  in
   List.concat_map rows ~f:(fun r ->
     String.split_lines r.Simulation_view.text
     |> List.mapi ~f:(fun i text ->
@@ -846,8 +922,9 @@ let%test_unit "cold Get selects newest and detail defaults once with VCD prefere
     }
   in
   let t = receive_ok t (Observe Test_data.attempt.id) snapshot in
-  assert (Option.equal String.equal (selected_artifact t) (Some "wave"));
-  assert (Option.equal String.equal t.view.case_id (Some "b"));
+  assert (Option.equal String.equal (selected_artifact t) (Some Test_data.artifact.id));
+  assert (Option.equal String.equal t.view.case_id (Some "a"));
+  assert (Option.is_none (waveform_artifact t));
   let t = select_artifact t Test_data.artifact.id in
   let t = receive_ok t Get history in
   let t = receive_ok t (Observe Test_data.attempt.id) snapshot in
@@ -1115,6 +1192,7 @@ let%test_unit "large navigators expose a unique typed cursor; artifact identity 
       { Simulation_view.empty with attempt = Some attempt.id; snapshot = Some snapshot }
   in
   let t = select_case t "case-1023" in
+  let t = select_artifact t "artifact-00-exact-id" in
   let selected pane t =
     rows t pane ~log_lines:(fun _ -> assert false)
     |> List.filter ~f:(fun r -> r.Simulation_view.selected)
@@ -1145,7 +1223,7 @@ let%test_unit "large navigators expose a unique typed cursor; artifact identity 
   let t = select_artifact t "artifact-31-exact-id" in
   assert (String.equal (only Artifacts t) "> Evidence label");
   let navigator = rows t Artifacts ~log_lines:(fun _ -> assert false) in
-  assert (List.length navigator = 64);
+  assert (List.length navigator = 65);
   assert (
     List.for_all navigator ~f:(fun r ->
       not (String.is_substring r.text ~substring:"SHA256:")));

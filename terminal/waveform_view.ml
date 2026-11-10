@@ -6,8 +6,8 @@ type value_layout = Waveform_preferences.value_layout =
   | Inline
   | Stacked
 
-(* The library renderer is deliberately bounded independently of the VCD parser. Its cycle
-   labels are relative; the absolute tick/physical unit header is ours. *)
+(* Legacy exact-renderer raster helper retained for API/probe compatibility. The
+   production graph uses bounded original-event cell projection, not this tick cap. *)
 let max_span = 4096L
 let max_selected = 16
 
@@ -31,7 +31,8 @@ type t =
   ; selected : Int.Set.t
   ; cursor : int64
   ; start : int64
-  ; span : int64
+  ; span : int64 (* elapsed tick distance, not inclusive tick count *)
+  ; extent_basis : string
   ; notice : string
   ; value_offset : int
   ; value_page_size : int
@@ -52,6 +53,7 @@ let create ~project artifact =
   ; cursor = 0L
   ; start = 0L
   ; span = 128L
+  ; extent_basis = "Default extent"
   ; notice = "Fetching bounded bytes; verifying exact identity and SHA256"
   ; cache = None
   ; value_offset = 0
@@ -76,15 +78,34 @@ let remember t =
   }
 ;;
 
+let default_extent data =
+  let first, last = D.time_bounds data in
+  match D.infer_clock data with
+  | Some (signal, period) ->
+    let distance = Int64.(last - first) in
+    let clipped = Int64.(period > distance / 8L) in
+    let span = if clipped then distance else Int64.(period * 8L) in
+    ( first
+    , span
+    , sprintf
+        "%s · inferred %s period %s (view heuristic)"
+        (if clipped then "8-cycle target (clipped to trace)" else "8 cycles")
+        signal.D.reference
+        (Time.format_compact (D.timescale data) period) )
+  | None -> first, Int64.(last - first), "Fit full trace · no reliable clock inferred"
+;;
+
 let receive ?(restore_navigation = false) t = function
   | Error e -> { t with loaded = Failed (Error.to_string_hum e); cache = None }
   | Ok data ->
-    let first, _ = D.time_bounds data in
+    let first, span, extent_basis = default_extent data in
     let received =
       { t with
         loaded = Ready data
       ; cursor = first
       ; start = first
+      ; span
+      ; extent_basis
       ; notice = ""
       ; selected =
           D.signals data
@@ -96,7 +117,14 @@ let receive ?(restore_navigation = false) t = function
       }
     in
     if restore_navigation
-    then { received with cursor = t.cursor; start = t.start; selected = t.selected }
+    then
+      { received with
+        cursor = t.cursor
+      ; start = t.start
+      ; span = t.span
+      ; extent_basis = t.extent_basis
+      ; selected = t.selected
+      }
     else received
 ;;
 
@@ -115,8 +143,7 @@ let clamp_time data time =
 let stop t data =
   let _, last = D.time_bounds data in
   (* Subtraction before addition also handles timestamps near Int64.max_value. *)
-  Int64.(
-    t.start + min (Option.value t.viewport_ticks ~default:t.span - 1L) (last - t.start))
+  Int64.(t.start + min t.span (last - t.start))
 ;;
 
 type input =
@@ -200,7 +227,13 @@ let input t key =
              (match t.loaded, Or_error.try_with (fun () -> Int64.of_string t.query) with
               | Ready data, Ok time ->
                 let time = clamp_time data time in
-                { t with cursor = time; start = time; editing = None; notice = "" }
+                { t with
+                  cursor = time
+                ; start = time
+                ; editing = None
+                ; notice = ""
+                ; extent_basis = "Manual window"
+                }
               | _ -> { t with notice = "Enter an integer VCD tick" }))
         | Backspace -> { t with query = drop_character t.query }
         | Delete_word ->
@@ -229,9 +262,26 @@ let input t key =
             let start =
               if Int64.(cursor < t.start || cursor > stop t data) then cursor else t.start
             in
-            { t with cursor; start }
+            { t with
+              cursor
+            ; start
+            ; extent_basis =
+                (if Int64.equal start t.start then t.extent_basis else "Manual window")
+            }
           in
           (match key with
+           | Char 'f' ->
+             let first, last = D.time_bounds data in
+             { t with
+               start = first
+             ; span = Int64.(last - first)
+             ; extent_basis = "Fit full trace"
+             ; notice = ""
+             ; viewport_ticks = None
+             }
+           | Char 'd' ->
+             let start, span, extent_basis = default_extent data in
+             { t with start; span; extent_basis; notice = ""; viewport_ticks = None }
            | Up | Char 'k' -> move (-1)
            | Down | Char 'j' -> move 1
            | Char '{' ->
@@ -250,34 +300,31 @@ let input t key =
            | Char 'G' -> cursor (snd (D.time_bounds data))
            | Char '[' ->
              { t with
-               start =
-                 clamp_time
-                   data
-                   Int64.(
-                     max
-                       0L
-                       (t.start
-                        - max 1L (Option.value t.viewport_ticks ~default:t.span / 2L)))
+               extent_basis = "Manual window"
+             ; start = clamp_time data Int64.(max 0L (t.start - max 1L (t.span / 2L)))
              }
            | Char ']' ->
              let _, last = D.time_bounds data in
              { t with
-               start =
-                 Int64.(
-                   t.start
-                   + min
-                       (last - t.start)
-                       (max 1L (Option.value t.viewport_ticks ~default:t.span / 2L)))
+               extent_basis = "Manual window"
+             ; start = Int64.(t.start + min (last - t.start) (max 1L (t.span / 2L)))
              }
            | Char ('+' | '=') ->
              { t with
-               span = Int64.max 1L Int64.(t.span / 2L)
+               span = Int64.(t.span / 2L)
+             ; extent_basis = "Manual window"
              ; start = t.cursor
              ; viewport_ticks = None
              }
            | Char '-' ->
+             let first, last = D.time_bounds data in
+             let distance = Int64.(last - first) in
              { t with
-               span = Int64.min max_span Int64.(t.span * 2L)
+               span =
+                 (if Int64.(t.span > distance / 2L)
+                  then distance
+                  else Int64.min distance (Int64.max 1L Int64.(t.span * 2L)))
+             ; extent_basis = "Manual window"
              ; start = t.cursor
              ; viewport_ticks = None
              }
@@ -388,46 +435,33 @@ let waves_geometry ~width ~height =
   { label_width
   ; plot_width
   ; columns = plot_width - 2
-  ; graph_height = Int.max 3 (Int.min 80 (height - 5))
-  ; graph_y = 3
+  ; graph_height = Int.max 3 (Int.min 80 (height - 6))
+  ; graph_y = 4
   ; plot_x = label_width + 2
-  ; plot_y = 4
-  ; ruler_y = 1
-  ; marks_y = 2
+  ; plot_y = 5
+  ; ruler_y = 2
+  ; marks_y = 3
   }
 ;;
 
 let waves_mapping t data ~width =
   let g = waves_geometry ~width ~height:10 in
-  let r = raster ~columns:g.columns ~target:(Int64.to_int_exn t.span) in
-  let t = { t with viewport_ticks = Some (Int64.of_int r.ticks) } in
-  Time.create ~code:r.code ~columns:g.columns ~start:t.start ~stop:(stop t data)
+  Time.create_window ~columns:g.columns ~start:t.start ~stop:(stop t data)
 ;;
 
 let prepare ?(appearance = Appearance.default) t dimensions =
-  let g = frame_geometry appearance dimensions in
-  let graph_width =
-    Int.min
-      1024
-      (Int.max 7 (g.content_width - sidebar_width t ~width:g.content_width - 1))
-  in
-  let g = waves_geometry ~width:graph_width ~height:10 in
-  let r = raster ~columns:g.columns ~target:(Int64.to_int_exn t.span) in
-  let ticks = Int64.of_int r.ticks in
-  if Option.equal Int64.equal t.viewport_ticks (Some ticks)
-  then t
-  else { t with viewport_ticks = Some ticks }
+  ignore (appearance, dimensions);
+  t
 ;;
 
 let graph t data ~width ~height signals =
-  let r = raster ~columns:(width - 2) ~target:(Int64.to_int_exn t.span) in
-  let stop = stop { t with viewport_ticks = Some (Int64.of_int r.ticks) } data in
+  let stop = stop t data in
   let ids = List.map signals ~f:(fun s -> s.D.index) in
   match t.cache with
   | Some (w, h, code, start, finish, previous, text)
     when w = width
          && h = height
-         && code = r.code
+         && code = 0
          && Int64.equal start t.start
          && Int64.equal finish stop
          && List.equal Int.equal ids previous -> text
@@ -435,17 +469,85 @@ let graph t data ~width ~height signals =
     let result =
       Or_error.try_with_join (fun () ->
         let open Or_error.Let_syntax in
-        let%map waves = D.to_waveterm data ~signals ~start:t.start ~stop in
-        Hardcaml_waveterm.Waveform.to_string
-          ~display_rules:
-            (List.map signals ~f:(fun s ->
-               Hardcaml_waveterm.Display_rule.port_name_is s.D.name))
-          ~display_width:width
-          ~display_height:height
-          ~display_values:false
-          ~signals_width:0
-          ~wave_width:r.code
-          waves)
+        let columns = Int.max 1 (width - 2) in
+        let mapping = Time.create_window ~columns ~start:t.start ~stop in
+        let cells =
+          Array.init columns ~f:(fun column ->
+            Option.value_exn (Time.cell_bounds mapping ~column))
+        in
+        let%map lanes = D.project_window data ~signals ~cells in
+        let border left middle right =
+          left ^ String.concat (List.init columns ~f:(fun _ -> middle)) ^ right
+        in
+        let row text =
+          "│" ^ text ^ String.make (Int.max 0 (columns - String.length text)) ' ' ^ "│"
+        in
+        let rows =
+          List.concat_map lanes ~f:(fun lane ->
+            let s = lane.D.signal in
+            let lane_height = if s.width = 1 then 2 else 3 in
+            List.init lane_height ~f:(fun y ->
+              match lane.reason with
+              | Some reason ->
+                row
+                  (if y = (lane_height - 1) / 2
+                   then String.prefix (reason ^ "; no graph") columns
+                   else "")
+              | None ->
+                let chars =
+                  Array.mapi lane.samples ~f:(fun i value ->
+                    if lane.transitions.(i) >= 2
+                    then '#'
+                    else if lane.transitions.(i) = 1
+                    then '|'
+                    else if s.width > 1
+                    then if y = 1 then '=' else '-'
+                    else (
+                      match value with
+                      | Some "1" -> if y = 0 then '_' else ' '
+                      | _ -> if y = 1 then '_' else ' '))
+                in
+                if s.width > 1 && y = 1
+                then (
+                  let rec label i =
+                    if i < Array.length chars
+                    then
+                      if lane.transitions.(i) <> 0
+                      then label (i + 1)
+                      else (
+                        let finish = ref (i + 1) in
+                        while
+                          !finish < Array.length chars
+                          && lane.transitions.(!finish) = 0
+                          && Option.equal
+                               String.equal
+                               lane.samples.(i)
+                               lane.samples.(!finish)
+                        do
+                          incr finish
+                        done;
+                        Option.iter lane.samples.(i) ~f:(fun value ->
+                          let hex =
+                            Hardcaml.Bits.of_bit_string value
+                            |> Hardcaml.Bits.to_constant
+                            |> Hardcaml.Constant.to_hex_string
+                                 ~capitalize:true
+                                 ~signedness:Unsigned
+                          in
+                          if String.length hex + 2 <= !finish - i
+                          then String.iteri hex ~f:(fun j c -> chars.(i + 1 + j) <- c));
+                        label !finish)
+                  in
+                  label 0);
+                row (String.of_char_list (Array.to_list chars))))
+        in
+        let rows = List.take rows (Int.max 0 (height - 2)) in
+        let blanks =
+          List.init (Int.max 0 (height - 2 - List.length rows)) ~f:(fun _ -> row "")
+        in
+        String.concat
+          ~sep:"\n"
+          ((border "┌" "─" "┐" :: rows) @ blanks @ [ border "└" "─" "┘" ]))
     in
     let text =
       match result with
@@ -456,7 +558,7 @@ let graph t data ~width ~height signals =
         ^ "\nExact binary/X/Z cursor values remain in the signal list.\n"
         ^ "Narrow the window or selection, or use export/external viewer from Testing."
     in
-    t.cache <- Some (width, height, r.code, t.start, stop, ids, text);
+    t.cache <- Some (width, height, 0, t.start, stop, ids, text);
     text
 ;;
 
@@ -823,13 +925,6 @@ let render_waves ?(appearance = Appearance.default) ?(hints = true) t ~width ~he
       (* Tile-local labels remain adjacent to the exact lane they describe. *)
       let label_width = geometry.label_width in
       let plot_width = geometry.plot_width in
-      let r = raster ~columns:geometry.columns ~target:(Int64.to_int_exn t.span) in
-      let ticks = Some (Int64.of_int r.ticks) in
-      let t =
-        if Option.equal Int64.equal t.viewport_ticks ticks
-        then t
-        else { t with viewport_ticks = ticks }
-      in
       let mapping = waves_mapping t data ~width in
       let status = offscreen_status appearance mapping t.cursor in
       let cursor_column =
@@ -878,12 +973,19 @@ let render_waves ?(appearance = Appearance.default) ?(hints = true) t ~width ~he
       in
       let description =
         match Time.scale mapping, cursor_column with
-        | Ticks_per_cell _, Some column ->
+        | Window_cells { compressed = true }, Some column | Ticks_per_cell _, Some column
+          ->
           (match Time.cell_bounds mapping ~column with
            | Some (first, last) ->
-             sprintf "Cursor cell %Ld..%Ld ticks · %s" first last r.description
-           | None -> r.description)
-        | _ -> r.description
+             sprintf
+               "Compressed | edge # dense (ordering hidden) · cell %Ld..%Ld · exact \
+                cursor"
+               first
+               last
+           | None -> "Compressed graph; cursor exact")
+        | Window_cells { compressed = true }, None ->
+          "Compressed | edge # dense (ordering hidden) · exact cursor off-screen"
+        | _ -> "Exact tick cells · | transition, # dense; cursor values exact"
       in
       let description =
         if Int64.equal (Time.stop mapping) (snd (D.time_bounds data))
@@ -900,6 +1002,14 @@ let render_waves ?(appearance = Appearance.default) ?(hints = true) t ~width ~he
                (D.timescale_to_string (D.timescale data))
                t.start
                (Time.stop mapping))
+        ; text
+            R.Muted
+            (sprintf
+               "%s · extent %s"
+               t.extent_basis
+               (Time.format_compact
+                  (D.timescale data)
+                  Int64.(Time.stop mapping - t.start)))
         ; ruler_row "Time" ruler_labels
         ; ruler_row "absolute" ruler_marks
         ; View.hcat
@@ -928,12 +1038,8 @@ let render_waves ?(appearance = Appearance.default) ?(hints = true) t ~width ~he
 ;;
 
 let prepare_waves t ~width =
-  let geometry = waves_geometry ~width ~height:10 in
-  let r = raster ~columns:geometry.columns ~target:(Int64.to_int_exn t.span) in
-  let ticks = Some (Int64.of_int r.ticks) in
-  if Option.equal Int64.equal t.viewport_ticks ticks
-  then t
-  else { t with viewport_ticks = ticks }
+  ignore width;
+  t
 ;;
 
 let render_session
@@ -1029,9 +1135,11 @@ let render_session
   |> Host_view.colored appearance R.Foreground
 ;;
 
-let picker_candidates ~attempt artifacts =
+let picker_candidates ~attempt ~case_id artifacts =
   List.filter artifacts ~f:(fun (a : Hardcaml_workbench_protocol.Simulation.Artifact.t) ->
-    String.equal a.attempt_id attempt && String.equal (Simulation_export.suffix a) ".vcd")
+    String.equal a.attempt_id attempt
+    && Option.equal String.equal a.case_id case_id
+    && Simulation_export.vcd_media a)
   |> Fn.flip List.take 128
 ;;
 
@@ -1086,11 +1194,11 @@ let render_waveform
     [ sprintf
         "Case %s · attempt %s · %s %s"
         (shorten ~width:24 (Option.value t.artifact.case_id ~default:"(attempt)"))
-         (identity t.artifact.attempt_id)
+        (identity t.artifact.attempt_id)
         (match t.loaded with
          | Ready _ -> "SHA"
          | _ -> "expected SHA")
-         (Option.value_map t.artifact.sha256 ~default:"missing" ~f:identity)
+        (Option.value_map t.artifact.sha256 ~default:"missing" ~f:identity)
     ]
     |> List.concat_map ~f:(fun line -> Artifact_view.wrap ~width (safe line))
   in
@@ -1129,7 +1237,7 @@ let render_waveform
     | Some Time -> "Absolute VCD tick (Enter / Esc): " ^ t.query
     | None ->
       "Space c c commands · j/k signal · Enter toggle · / filter · h/l tick · : time · \
-       [/] pan · +/- zoom · g/G ends · { } value"
+       [/] pan · +/- zoom · f Fit · d Default · g/G ends · { } value"
   in
   let value =
     match t.loaded with
@@ -1161,15 +1269,16 @@ let render_waveform
     match t.loaded with
     | Loading | Failed _ -> t.notice
     | Ready data ->
-      let graph_width = Int.min 1024 (Int.max 7 (width - sidebar_width t ~width - 1)) in
-      let plot_width = Int.max 7 (graph_width - wave_labels_width graph_width - 1) in
-      let r = raster ~columns:(plot_width - 2) ~target:(Int64.to_int_exn t.span) in
       let _, last = D.time_bounds data in
       let end_note =
         if Int64.equal (stop t data) last then " · end of trace (no data beyond)" else ""
       in
       if String.is_empty t.notice
-      then r.description ^ " · integer tick grid" ^ end_note
+      then
+        t.extent_basis
+        ^ " · extent "
+        ^ Time.format_compact (D.timescale data) Int64.(stop t data - t.start)
+        ^ end_note
       else t.notice
   in
   let content =
@@ -1251,7 +1360,7 @@ let render
     |> Host_view.colored appearance R.Foreground
 ;;
 
-let%test_unit "exact cursor, clamped pan, selection and explicit X rendering failure" =
+let%test_unit "exact cursor, clamped pan, selection and explicit X lane marker" =
   let data =
     D.parse
       "$timescale 1 ns $end\n\
@@ -1286,12 +1395,94 @@ let%test_unit "exact cursor, clamped pan, selection and explicit X rendering fai
   assert (Int64.equal t.cursor 20L);
   let t = input t (Char 'g') in
   let text = graph t data ~width:70 ~height:12 (Array.to_list (D.signals data)) in
-  assert (String.is_substring text ~substring:"no values fabricated");
+  assert (String.is_substring text ~substring:"X/Z in window; no graph");
+  assert (not (String.is_substring text ~substring:"Graph unavailable"));
   assert (Set.equal (input t (Char ' ')).selected t.selected);
   let t = input t Enter in
   assert (Set.is_empty t.selected);
   let t = input t (Char '/') |> fun t -> input t (Char 'z') |> fun t -> input t Enter in
   assert (List.is_empty (filtered t data))
+;;
+
+let%test_unit "mixed X Z unset and known lanes preserve exact row geometry and values" =
+  let data =
+    D.parse
+      "$timescale 1ps $end $scope module tb $end $var wire 1 ! clk $end $var wire 8 # q \
+       [7:0] $end $var wire 1 $ ena $end $var wire 1 % z $end $var wire 4 & unset [3:0] \
+       $end $var wire 4 ' known [3:0] $end $upscope $end $enddefinitions $end #0 0! bx # \
+       1$ z% b1010 ' #5 1! #10 b0 # 0% b0011 & #20 0!"
+    |> Or_error.ok_exn
+  in
+  let artifact : Hardcaml_workbench_protocol.Simulation.Artifact.t =
+    { id = "mixed"
+    ; attempt_id = "attempt"
+    ; case_id = Some "case"
+    ; label = "mixed"
+    ; kind = "trace"
+    ; media_type = "text/vcd"
+    ; size = Some 100
+    ; sha256 = Some (String.make 64 'a')
+    ; availability = Available
+    }
+  in
+  let t = receive (create ~project:"project" artifact) (Ok data) in
+  let signals = Array.to_list (D.signals data) in
+  List.iter [ 80; 120 ] ~f:(fun width ->
+    let output = graph t data ~width ~height:20 signals |> String.split_lines in
+    assert (List.length output = 20);
+    List.iter output ~f:(fun line ->
+      assert (Bonsai_term.View.width (Bonsai_term.View.text line) = width));
+    List.iter [ 4; 8 ] ~f:(fun row ->
+      assert (
+        String.is_substring (List.nth_exn output row) ~substring:"X/Z in window; no graph"));
+    assert (
+      String.is_substring
+        (List.nth_exn output 11)
+        ~substring:"Uninitialized in window; no graph");
+    (* Known scalar lanes on both sides of q retain their own renderer rows. *)
+    let known = List.filteri signals ~f:(fun i _ -> i = 0 || i = 2 || i = 5) in
+    let native =
+      graph { t with cache = None } data ~width ~height:20 known |> String.split_lines
+    in
+    List.iter
+      [ 1, 1; 2, 2; 6, 3; 7, 4; 13, 5; 14, 6; 15, 7 ]
+      ~f:(fun (mixed, known) ->
+        assert (String.equal (List.nth_exn output mixed) (List.nth_exn native known)));
+    let rendered = render_waves ~hints:false t ~width ~height:30 in
+    let image = Bonsai_term.View.Private.notty_image rendered in
+    let buf = Buffer.create 16384 in
+    Notty.Render.to_buffer buf Notty.Cap.dumb (0, 0) (width, 30) image;
+    let text = Buffer.contents buf in
+    assert (not (String.is_substring text ~substring:"Graph unavailable")));
+  assert (
+    Option.equal
+      String.equal
+      (D.value_at data (List.nth_exn signals 1) ~time:0L)
+      (Some "xxxxxxxx"));
+  assert (
+    Option.equal
+      String.equal
+      (D.value_at data (List.nth_exn signals 3) ~time:0L)
+      (Some "z"));
+  assert (Option.is_none (D.value_at data (List.nth_exn signals 4) ~time:0L));
+  let later =
+    graph { t with start = 10L; cache = None } data ~width:80 ~height:20 signals
+  in
+  assert (not (String.is_substring later ~substring:"no graph"));
+  (* Aggregate budgets still count marked lanes, rather than resetting per signal. *)
+  let dense =
+    "$timescale 1ps $end $var wire 1 ! x $end $var wire 1 # a $end $enddefinitions $end \
+     #0 x! 0# #1 "
+    ^ String.concat (List.init 50000 ~f:(fun _ -> "x! 1# "))
+  in
+  let dense = D.parse dense |> Or_error.ok_exn in
+  assert (
+    Or_error.is_error
+      (D.classify_window
+         dense
+         ~signals:(Array.to_list (D.signals dense))
+         ~start:0L
+         ~stop:1L))
 ;;
 
 let%test_unit "binary rendering, bounded zoom/resize and frozen artifact identity" =
@@ -1326,9 +1517,9 @@ let%test_unit "binary rendering, bounded zoom/resize and frozen artifact identit
   assert (
     not (same t ~project:"project" { artifact with sha256 = Some (String.make 64 'b') }));
   let t = List.fold (List.init 30 ~f:Fn.id) ~init:t ~f:(fun t _ -> input t (Char '-')) in
-  assert (Int64.equal t.span max_span);
+  assert (Int64.(t.span >= 5000L));
   let t = input t (Char ']') in
-  assert (Int64.equal t.start 2048L);
+  assert (Int64.equal t.start 2500L);
   let t = input t (Char ':') |> fun t -> input t Backspace in
   let t =
     List.fold (String.to_list "5000") ~init:t ~f:(fun t c -> input t (Char c))
@@ -1337,7 +1528,7 @@ let%test_unit "binary rendering, bounded zoom/resize and frozen artifact identit
   assert (Int64.equal t.cursor 5000L);
   let graph = graph t data ~width:70 ~height:12 (Array.to_list (D.signals data)) in
   assert (not (String.is_substring graph ~substring:"unavailable"));
-  assert (String.is_substring graph ~substring:"Waves");
+  assert (String.is_substring graph ~substring:"┌");
   assert (not (String.is_substring graph ~substring:"Signals"));
   List.iter
     [ 1, 1; 32, 8; 80, 24; 120, 40; 180, 55; 500, 200 ]
@@ -1395,7 +1586,7 @@ let%test_unit "80x24 shows bus value and Back even with long artifact metadata" 
     ; ">[*]"
     ; "= 10101"
     ; "Value 0..5/5: 10101"
-     ; "SHA dddd…dddd"
+    ; "SHA dddd…dddd"
     ]
     ~f:(fun substring ->
       if not (String.is_substring text ~substring)
@@ -1535,11 +1726,11 @@ let%test_unit "wide integer raster fills the plot and preserves a regular clock"
   let width = Int.max 7 (width - wave_labels_width width - 1) in
   let r = raster ~columns:(width - 2) ~target:256 in
   assert (r.code = -1);
-  assert (Int64.equal (stop t data) (Int64.of_int (width - 3)));
+  assert (Int64.equal (stop t data) 256L);
   let text = graph t data ~width ~height:8 (Array.to_list (D.signals data)) in
   assert (not (String.is_substring text ~substring:"Signals"));
   let rows = String.split_lines text |> Fn.flip List.drop 1 |> Fn.flip List.take 2 in
-  assert (List.exists rows ~f:(fun row -> String.is_substring row ~substring:"┐"));
+  assert (List.exists rows ~f:(fun row -> String.is_substring row ~substring:"|"));
   assert (String.is_substring (List.nth_exn (String.split_lines text) 4) ~substring:"A");
   let page = lane_page (Array.to_list (D.signals data)) ~focused:(Some 1) ~height:5 in
   assert (List.length page = 1 && (List.hd_exn page).index = 1);
@@ -1564,17 +1755,14 @@ let%test_unit "wide integer raster fills the plot and preserves a regular clock"
   assert (
     List.exists rows ~f:(fun row ->
       not (String.is_empty (String.strip (slice row ~start:(width - 2) ~count:1)))));
-  let period start =
-    List.map rows ~f:(fun row -> slice row ~start:(start + 1) ~count:10) |> String.concat
-  in
-  List.iter
-    (List.init (Int.max 1 ((width - 40) / 10)) ~f:(fun n -> 30 + (n * 10)))
-    ~f:(fun start -> assert (String.equal (period 20) (period start)));
+  (* Physical duration stays fixed; individual edges are localized to their original-event
+     cells rather than assuming a fixed character period. *)
+  assert (String.is_substring text ~substring:"|");
   let compressed = raster ~columns:(width - 2) ~target:4096 in
   assert (compressed.code < -1);
   assert (String.is_substring compressed.description ~substring:"multiple transitions");
   let small = prepare t { dimensions with width = 80 } in
-  assert (not (Option.equal Int64.equal small.viewport_ticks t.viewport_ticks));
+  assert (Int64.equal (stop small data) (stop t data));
   assert (Int64.equal small.cursor t.cursor)
 ;;
 
@@ -1625,7 +1813,7 @@ let%test_unit "waveform uses Workbench frames, palette and compact inspectable m
         |> box ~width:1 ~height:1
       in
       let expected_stroke =
-        Bonsai_term.View.text ~attrs:(Host_view.Role.attrs appearance Metric) "─"
+        Bonsai_term.View.text ~attrs:(Host_view.Role.attrs appearance Metric) "_"
       in
       assert (String.equal (ansi stroke) (ansi expected_stroke));
       let background =
@@ -1728,9 +1916,12 @@ let%test_unit "independent Signals never hides disabled names; Space is reserved
   let candidates =
     picker_candidates
       ~attempt:artifact.attempt_id
+      ~case_id:artifact.case_id
       [ artifact
       ; { artifact with attempt_id = "different-attempt" }
+      ; { artifact with case_id = Some "different-case" }
       ; { artifact with media_type = "application/fst" }
+      ; { artifact with media_type = "application/json-vcd" }
       ]
   in
   assert (List.length candidates = 1);
@@ -1738,6 +1929,7 @@ let%test_unit "independent Signals never hides disabled names; Space is reserved
     List.length
       (picker_candidates
          ~attempt:artifact.attempt_id
+         ~case_id:artifact.case_id
          (List.init 256 ~f:(fun _ -> artifact)))
     = 128)
 ;;
@@ -1771,7 +1963,10 @@ let%test_unit "picker retains missing pin marker and cursor without matching cha
     ]
     ~f:(fun artifact -> assert (not (picker_matches_pin ~pinned artifact)));
   let candidates =
-    picker_candidates ~attempt:pinned.attempt_id [ different_digest; missing ]
+    picker_candidates
+      ~attempt:pinned.attempt_id
+      ~case_id:pinned.case_id
+      [ different_digest; missing ]
   in
   assert (picker_initial_index ~pinned candidates = 1);
   (* The presentation relaxation must not make an unavailable observation equal to the
@@ -2157,11 +2352,15 @@ let%test_unit "native cursor is exact at transitions and preserves every glyph i
   in
   let geometry = waves_geometry ~width:80 ~height:24 in
   let mapping = waves_mapping t data ~width:80 in
-  assert (
-    match Time.scale mapping with
-    | Cells_per_tick 4 -> true
-    | _ -> false);
-  assert (Time.equal_cursor (Time.cursor mapping 5L) (Column 20));
+  assert (Int64.equal (Time.stop mapping) 16L);
+  let cursor_column =
+    match Time.cursor mapping 5L with
+    | Column c -> c
+    | _ -> assert false
+  in
+  let cursor_x = cursor_column + 1 in
+  let a, b = Option.value_exn (Time.cell_bounds mapping ~column:cursor_column) in
+  assert (Int64.equal a 5L && Int64.equal b 5L);
   let signals = Array.to_list (D.signals data) in
   assert (
     String.equal
@@ -2191,8 +2390,8 @@ let%test_unit "native cursor is exact at transitions and preserves every glyph i
       ~native:false
       plot
   in
-  let glyph = sample plain 21 1 |> output Notty.Cap.dumb |> String.strip in
-  assert (List.mem [ "┌"; "┐"; "└"; "┘" ] glyph ~equal:String.equal);
+  let glyph = sample plain cursor_x 1 |> output Notty.Cap.dumb |> String.strip in
+  assert (String.equal glyph "|");
   List.iter Appearance.Scheme.all ~f:(fun scheme ->
     List.iter Appearance.Preset.all ~f:(fun preset ->
       List.iter Appearance.Color.all ~f:(fun color ->
@@ -2217,7 +2416,7 @@ let%test_unit "native cursor is exact at transitions and preserves every glyph i
         in
         assert (
           String.equal
-            (output Notty.Cap.ansi (sample overlay 21 1))
+            (output Notty.Cap.ansi (sample overlay cursor_x 1))
             (output Notty.Cap.ansi expected));
         (* The frame and neighbouring cell must not acquire the cursor's fill. *)
         let normal =
@@ -2231,7 +2430,7 @@ let%test_unit "native cursor is exact at transitions and preserves every glyph i
             plot
         in
         List.iter
-          [ 21, 0; 22, 1; 21, geometry.graph_height - 1 ]
+          [ cursor_x, 0; cursor_x + 1, 1; cursor_x, geometry.graph_height - 1 ]
           ~f:(fun (x, y) ->
             assert (
               String.equal
@@ -2270,17 +2469,19 @@ let%test_unit "native cursor is exact at transitions and preserves every glyph i
   let rendered = render_waves ~hints:false t ~width:80 ~height:24 in
   let text = output Notty.Cap.dumb rendered in
   List.iter
-    [ "Time"; "absolute"; "0 ps"; "150 ps"; "Cursor 5 ticks" ]
+    [ "Time"; "absolute"; "0 ps"; "160 ps"; "Cursor 5 ticks" ]
     ~f:(fun substring -> assert (String.is_substring text ~substring));
   assert (
     String.is_substring
       (output
          Notty.Cap.dumb
          (Bonsai_term.View.crop ~t:geometry.ruler_y rendered |> box ~width:80 ~height:2))
-      ~substring:"150 ps");
+      ~substring:"160 ps");
   assert (
     String.equal
-      (output Notty.Cap.ansi (sample rendered (geometry.plot_x + 20) geometry.plot_y))
+      (output
+         Notty.Cap.ansi
+         (sample rendered (geometry.plot_x + cursor_column) geometry.plot_y))
       (output
          Notty.Cap.ansi
          (sample
@@ -2292,7 +2493,7 @@ let%test_unit "native cursor is exact at transitions and preserves every glyph i
                ~height:geometry.graph_height
                ~native:true
                plot)
-            21
+            cursor_x
             1)))
 ;;
 
@@ -2353,7 +2554,7 @@ let%test_unit "compressed cells, offscreen pan, huge times, bounds and render \
     assert (
       String.is_substring
         (output view)
-        ~substring:(Time.format_time (D.timescale data) (Time.start mapping)));
+        ~substring:(Time.format_compact (D.timescale data) (Time.start mapping)));
     assert (
       String.is_substring
         (String.concat (identity_lines cursor ~width))
@@ -2363,12 +2564,12 @@ let%test_unit "compressed cells, offscreen pan, huge times, bounds and render \
   assert (
     String.is_substring
       (output (render_waves ~hints:false t ~width:120 ~height:24))
-      ~substring:"922337203685477580700 fs");
+      ~substring:"922337.2036854775807 s");
   let compressed = { base with start = 100L; cursor = 105L; span = 4096L } in
   let mapping = waves_mapping compressed data ~width:80 in
   assert (
     match Time.scale mapping with
-    | Ticks_per_cell _ -> true
+    | Window_cells { compressed = true } | Ticks_per_cell _ -> true
     | _ -> false);
   let column =
     match Time.cursor mapping compressed.cursor with
@@ -2379,8 +2580,7 @@ let%test_unit "compressed cells, offscreen pan, huge times, bounds and render \
   assert (Int64.(first <= compressed.cursor && compressed.cursor <= last));
   let text = output (render_waves ~hints:false compressed ~width:80 ~height:24) in
   assert (String.is_substring text ~substring:"Cursor 105 ticks");
-  assert (
-    String.is_substring text ~substring:(sprintf "Cursor cell %Ld..%Ld ticks" first last));
+  assert (String.is_substring text ~substring:(sprintf "cell %Ld..%Ld" first last));
   List.iter
     [ { compressed with cursor = 0L }, "off-screen left"
     ; { compressed with cursor = 10000L }, "off-screen right"
@@ -2441,4 +2641,93 @@ let%test_unit "compressed cells, offscreen pan, huge times, bounds and render \
   in
   assert (String.is_substring quick ~substring:"off-screen left");
   assert (String.is_substring quick ~substring:"absolute")
+;;
+
+let%test_unit "default clock extent, explicit Fit and resize retain original ticks" =
+  let artifact : Hardcaml_workbench_protocol.Simulation.Artifact.t =
+    { id = "extent"
+    ; attempt_id = "attempt"
+    ; case_id = None
+    ; label = "extent"
+    ; kind = "trace"
+    ; media_type = "text/vcd"
+    ; size = Some 100
+    ; sha256 = Some (String.make 64 'a')
+    ; availability = Available
+    }
+  in
+  List.iter [ 2; 10000 ] ~f:(fun period ->
+    let data =
+      D.parse
+        ("$timescale 1ps $end $var wire 1 ! clk $end $enddefinitions $end "
+         ^ String.concat
+             (List.init 30 ~f:(fun i -> sprintf "#%d %d! " (i * period / 2) (i % 2))))
+      |> Or_error.ok_exn
+    in
+    let t = receive (create ~project:"p" artifact) (Ok data) in
+    assert (Int64.equal t.span (Int64.of_int (8 * period)));
+    assert (String.is_substring t.extent_basis ~substring:"8 cycles");
+    let fit = input t (Char 'f') in
+    let _, last = D.time_bounds data in
+    assert (Int64.equal (stop fit data) last && Int64.equal fit.cursor t.cursor);
+    List.iter [ 7; 32; 80; 230; 1000 ] ~f:(fun width ->
+      let ready = prepare_waves fit ~width in
+      let mapping = waves_mapping ready data ~width in
+      assert (Int64.equal (Time.start mapping) 0L && Int64.equal (Time.stop mapping) last));
+    assert (Int64.equal (input fit Right).cursor 1L);
+    let default = input fit (Char 'd') in
+    assert (Int64.equal default.span t.span));
+  let point =
+    D.parse "$timescale 100fs $end $var wire 1 ! data $end $enddefinitions $end #0 1!"
+    |> Or_error.ok_exn
+  in
+  let t = receive (create ~project:"p" artifact) (Ok point) in
+  assert (Int64.equal t.span 0L);
+  assert (String.is_substring t.extent_basis ~substring:"no reliable clock");
+  List.iter [ Char 'f'; Char 'd'; Char '+'; Char '-'; Right; Left ] ~f:(fun key ->
+    let t = input t key in
+    assert (Int64.equal t.cursor 0L && Int64.equal (stop t point) 0L);
+    let text = graph t point ~width:3 ~height:4 (Array.to_list (D.signals point)) in
+    assert (not (String.is_substring text ~substring:"unavailable")))
+;;
+
+let%test_unit "short inferred clock labels its clipped target rather than achieved eight \
+               cycles"
+  =
+  let data =
+    D.parse
+      ("$timescale 1ps $end $var wire 1 ! clk $end $enddefinitions $end "
+       ^ String.concat (List.init 11 ~f:(fun i -> sprintf "#%d %d! " (i * 5) (i % 2))))
+    |> Or_error.ok_exn
+  in
+  let start, span, basis = default_extent data in
+  assert (Int64.equal start 0L && Int64.equal span 50L);
+  assert (String.is_substring basis ~substring:"8-cycle target (clipped to trace)");
+  assert (not (String.is_substring basis ~substring:"8 cycles"));
+  let artifact : Hardcaml_workbench_protocol.Simulation.Artifact.t =
+    { id = "short"
+    ; attempt_id = "attempt"
+    ; case_id = None
+    ; label = "short"
+    ; kind = "trace"
+    ; media_type = "text/vcd"
+    ; size = Some 100
+    ; sha256 = Some (String.make 64 'a')
+    ; availability = Available
+    }
+  in
+  let t = receive (create ~project:"p" artifact) (Ok data) in
+  let t = input (input t (Char 'f')) (Char 'd') in
+  let view = render_waves t ~width:180 ~height:24 in
+  let buffer = Buffer.create 8192 in
+  Notty.Render.to_buffer
+    buffer
+    Notty.Cap.dumb
+    (0, 0)
+    (180, 24)
+    (Bonsai_term.View.Private.notty_image view);
+  let rendered = Buffer.contents buffer in
+  assert (String.is_substring rendered ~substring:"clipped to trace");
+  assert (String.is_substring rendered ~substring:"extent 50 ps");
+  assert (not (String.is_substring rendered ~substring:"8 cycles"))
 ;;

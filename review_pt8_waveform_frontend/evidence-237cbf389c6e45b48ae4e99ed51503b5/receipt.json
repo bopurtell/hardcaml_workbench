@@ -1,0 +1,9 @@
+{
+  "production_and_tests_unchanged": true,
+  "findings": [],
+  "binaries": {
+    "_build_pt8_workbench/default/terminal/main.exe": "2c301d20dd744e46942e4a4604a7bde475c67f126a8e86c157c9518fe05da698",
+    "_build_pt8_workbench/default/daemon/main.exe": "ec0108fd3ae65ac8bc8113462bfc1eb4dcdcbecf6410c144fbc982113f495a38"
+  },
+  "eda_allocation": 0
+}

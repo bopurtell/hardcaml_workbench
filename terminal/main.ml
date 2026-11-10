@@ -2584,8 +2584,20 @@ let refresh_waveform_runtime session workspace rt =
              | Ok snapshot ->
                (match snapshot.detail with
                 | Some detail when String.equal detail.id rt.pin.artifact.attempt_id ->
+                  let case_valid =
+                    Option.value_map rt.pin.artifact.case_id ~default:true ~f:(fun case ->
+                      List.mem detail.captured.selection.cases case ~equal:String.equal
+                      && List.exists detail.cases ~f:(fun row ->
+                        String.equal row.case_id case))
+                  in
                   rt.artifacts
-                  <- Waveform_view.picker_candidates ~attempt:detail.id detail.artifacts;
+                  <- (if not case_valid
+                      then []
+                      else
+                        Waveform_view.picker_candidates
+                          ~attempt:detail.id
+                          ~case_id:rt.pin.artifact.case_id
+                          detail.artifacts);
                   rt.picker_index
                   <- Waveform_view.picker_initial_index
                        ~pinned:rt.pin.artifact
@@ -4514,6 +4526,8 @@ let host_catalog_base session =
       [ "toggle", "Toggle focused signal (Enter)"
       ; "in", "Zoom in"
       ; "out", "Zoom out"
+      ; "fit", "Fit full trace (f)"
+      ; "default", "Default extent: eight inferred clock periods (d)"
       ; "first", "First timestamp"
       ; "last", "Last timestamp"
       ; "identity", "Inspect exact identity"
@@ -4537,6 +4551,9 @@ let host_catalog_base session =
   @ Option.value_map (active_waveform_runtime session) ~default:[] ~f:(fun (_, rt) ->
     List.map rt.artifacts ~f:(fun artifact ->
       Host.command
+        ?unavailable:
+          (Result.error (Simulation_export.embedded_vcd artifact)
+           |> Option.map ~f:Error.to_string_hum)
         ("waveform.pick." ^ artifact.id)
         ("Waveform: Select VCD " ^ artifact.label)
         "explicit retarget pinned attempt"
@@ -5021,10 +5038,48 @@ let open_timing_workspace ?analysis ?(separate = false) session ~(run : Run_ref.
   | _ -> return ()
 ;;
 
+let waveform_action_admitted session artifact =
+  let open Or_error.Let_syntax in
+  let%bind () = Simulation_export.embedded_vcd artifact in
+  let quick =
+    session.waveform_visible
+    && Option.value_map session.waveform ~default:false ~f:(fun v ->
+      Simulation.Artifact.equal v.artifact artifact
+      && Option.value_map (current_project session) ~default:false ~f:(fun p ->
+        String.equal v.project (Project_id.to_string p.id)))
+  in
+  let pinned =
+    Option.value_map (active_waveform_runtime session) ~default:false ~f:(fun (_, rt) ->
+      Option.value_map (current_project session) ~default:false ~f:(fun p ->
+        Project_id.equal p.id rt.pin.project)
+      && Option.equal
+           String.equal
+           rt.pin.artifact.case_id
+           artifact.Simulation.Artifact.case_id
+      && List.exists
+           (rt.pin.artifact :: rt.artifacts)
+           ~f:(Simulation.Artifact.equal artifact))
+  in
+  let testing =
+    Option.value_map (Host.focused session.host) ~default:false ~f:(fun tile ->
+      Host.simulation_kind tile.kind
+      && Host.waveform_eligible_for_tile session.host tile artifact)
+  in
+  if quick || pinned || testing
+  then Ok ()
+  else
+    Or_error.error_string
+      "Waveform selection unavailable or changed; select an exact captured case/artifact \
+       and reopen"
+;;
+
 let open_waveform session (artifact : Simulation.Artifact.t) =
-  match current_project session with
-  | None -> return ()
-  | Some project ->
+  match current_project session, waveform_action_admitted session artifact with
+  | _, Error error ->
+    session.host <- { session.host with notice = Error.to_string_hum error };
+    return ()
+  | None, _ -> return ()
+  | Some project, Ok () ->
     let project_name = Project_id.to_string project.id in
     (* Retain navigation for eight identities without retaining eight parsed traces. Only
        the current viewer owns a model; revisiting another trace re-verifies its bytes
@@ -5145,47 +5200,52 @@ let open_waveform session (artifact : Simulation.Artifact.t) =
 ;;
 
 let waveform_pin_for_artifact session (artifact : Simulation.Artifact.t) =
-  Or_error.try_with (fun () ->
-    let project = Option.value_exn (current_project session) in
-    let project_key, _ = preference_context session in
-    let existing =
-      Option.bind (active_waveform_runtime session) ~f:(fun (_, rt) ->
-        if String.equal rt.pin.project_key project_key
-           && String.equal rt.pin.artifact.attempt_id artifact.attempt_id
-           && List.exists
-                (rt.pin.artifact :: rt.artifacts)
-                ~f:(Simulation.Artifact.equal artifact)
-        then Some rt.pin.log
-        else None)
-    in
-    let observed =
-      Option.bind session.host.registry ~f:(fun registry ->
-        List.find_map registry.tiles ~f:(fun tile ->
-          if not (Host.simulation_kind tile.kind)
-          then None
-          else
-            Option.bind
-              (Simulation_view.detail (Host.simulation session.host tile.id))
-              ~f:(fun detail ->
-                if String.equal detail.id artifact.attempt_id
-                   && List.exists detail.artifacts ~f:(Simulation.Artifact.equal artifact)
-                then
-                  Some
-                    (Waveforms.Job
-                       { instance_id = session.hello.instance_id; job = detail.job })
-                else None)))
-    in
-    { Waveforms.project_key
-    ; project = project.id
-    ; artifact
-    ; log =
-        Option.first_some existing observed
-        |> Option.value
-             ~default:
-               (Unavailable
-                  "No exact observed attempt job was available when this artifact was \
-                   pinned")
-    })
+  Or_error.bind (waveform_action_admitted session artifact) ~f:(fun () ->
+    Or_error.try_with (fun () ->
+      let project = Option.value_exn (current_project session) in
+      let project_key, _ = preference_context session in
+      let existing =
+        Option.bind (active_waveform_runtime session) ~f:(fun (_, rt) ->
+          if String.equal rt.pin.project_key project_key
+             && String.equal rt.pin.artifact.attempt_id artifact.attempt_id
+             && Option.equal String.equal rt.pin.artifact.case_id artifact.case_id
+             && List.exists
+                  (rt.pin.artifact :: rt.artifacts)
+                  ~f:(Simulation.Artifact.equal artifact)
+          then Some rt.pin.log
+          else None)
+      in
+      let observed =
+        Option.bind session.host.registry ~f:(fun registry ->
+          List.find_map registry.tiles ~f:(fun tile ->
+            if not (Host.simulation_kind tile.kind)
+            then None
+            else
+              Option.bind
+                (Simulation_view.detail (Host.simulation session.host tile.id))
+                ~f:(fun detail ->
+                  if Host.waveform_eligible_for_tile session.host tile artifact
+                     && String.equal detail.id artifact.attempt_id
+                     && List.exists
+                          detail.artifacts
+                          ~f:(Simulation.Artifact.equal artifact)
+                  then
+                    Some
+                      (Waveforms.Job
+                         { instance_id = session.hello.instance_id; job = detail.job })
+                  else None)))
+      in
+      { Waveforms.project_key
+      ; project = project.id
+      ; artifact
+      ; log =
+          Option.first_some existing observed
+          |> Option.value
+               ~default:
+                 (Unavailable
+                    "No exact observed attempt job was available when this artifact was \
+                     pinned")
+      }))
 ;;
 
 let open_waveform_workspace session artifact =
@@ -5829,6 +5889,8 @@ let rec execute_host ?(validate = fun () -> Ok ()) session captured action ~exit
               | "toggle" -> Waveform_view.Enter
               | "in" -> Char '+'
               | "out" -> Char '-'
+              | "fit" -> Char 'f'
+              | "default" -> Char 'd'
               | "first" -> Char 'g'
               | "last" -> Char 'G'
               | _ -> Char 'i'
@@ -6473,10 +6535,11 @@ let rec execute_host ?(validate = fun () -> Ok ()) session captured action ~exit
            })
     | Edit_preparation (flow, profile) ->
       let query =
-        Option.value_map session.remembered_selection ~default:"" ~f:(fun s ->
-          if String.equal flow s.flow && String.equal profile s.profile
-          then String.concat ~sep:" " (s.endpoint :: s.assignments)
-          else "")
+        Launch_preferences.endpoint_query
+          ~remembered:session.remembered_selection
+          ~asic:session.asic
+          ~flow
+          ~profile
       in
       session.host
       <- { session.host with
@@ -6861,10 +6924,11 @@ let rec execute_host ?(validate = fun () -> Ok ()) session captured action ~exit
       Effect.Ignore
     | Edit_plan (flow, profile) ->
       let query =
-        Option.value_map session.remembered_selection ~default:"" ~f:(fun selection ->
-          if String.equal selection.flow flow && String.equal selection.profile profile
-          then String.concat (selection.endpoint :: selection.assignments) ~sep:" "
-          else "")
+        Launch_preferences.endpoint_query
+          ~remembered:session.remembered_selection
+          ~asic:session.asic
+          ~flow
+          ~profile
       in
       session.host
       <- { session.host with

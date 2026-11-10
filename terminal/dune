@@ -85,6 +85,15 @@
    (pps ppx_jane)))
 
 (test
+ (name endpoint_prompt_test)
+ (modules endpoint_prompt_test)
+ (deps ../backend/test/asic/production_flow_list.json)
+ (action (run %{test} %{dep:../backend/test/asic/production_flow_list.json}))
+ (libraries core yojson bonsai_term terminal_presentation
+  hardcaml_workbench_protocol hardcaml_workbench_backend hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))
+
+(test
  (name workloads_handoff_probe)
  (modules workloads_handoff_probe)
  (libraries async core core_unix terminal_presentation hardcaml_workbench_backend

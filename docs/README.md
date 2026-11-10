@@ -8,6 +8,8 @@ Project/provider commands remain useful without the application.
 
 | Document | What it answers |
 | --- | --- |
+| [Session checkpoint](session_checkpoint.md) | New-session pickup: ASIC PT.0–PT.8, delivered Workbench integration, paused synthesis acceptance and current test-refactor boundaries |
+| [Migration/refactor guides](migration_guides/README.md) | Actionable continuation plans, including the next Workbench test-organization steps |
 | [Feature list](feature_list.md) | What users want to do, what exists, and what comes first |
 | [Feature ticket catalog](features/README.md) |65 categorized WB tickets: one file each, priority, size/points, dependencies and decisions |
 | [Intake crosswalk](features/intake.md) / [dependency map](features/dependencies.md) |Where every submitted request went and what each prerequisite must supply |
@@ -23,6 +25,8 @@ Project/provider commands remain useful without the application.
 | [Restore default layout](default_layout_restore.md) |One-step recovery: show defaults, hide extras, restore sizes, clear zoom and select Fit while preserving evidence/pins |
 | [Layout focus-order plan](layout_focus_order_plan.md) | Implemented layout-defined Tab/Shift-Tab traversal, agent work packages and validation results |
 | [Provider integration](fs0_provider_integration.md) | Implemented public API, configuration, cache and supervision limits |
+| [Testing Workbench](testing.md) | Tool-test ownership, inline/subsystem/app integration layout, named suite selectors and current execution constraints |
+| [Stable development session](development_session.md) | One editable example/project and retained session with FIFO + PT.8 suites, normal ASIC preparation and time-aware waveforms |
 | [PT.8 Workloads](pt8_workloads.md) | Isolated session launch, verified retained results/A-B comparison and fresh example workload through Testing |
 | [Terminal host](fs0_terminal.md) / [Execution module](fs0_execution_module.md) | Current UI controls and daemon-routed generic execution boundary |
 | [Architecture](hardcaml_workbench_architecture.md) | Runtime, ownership, data and integration boundaries |

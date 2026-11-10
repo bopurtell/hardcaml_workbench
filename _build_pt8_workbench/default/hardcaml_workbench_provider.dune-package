@@ -1,0 +1,149 @@
+(lang dune 3.24)
+(name hardcaml_workbench_provider)
+(sections (lib .) (libexec .) (doc ../../doc/hardcaml_workbench_provider))
+(files
+ (lib
+  (META
+   backend_id.ml
+   build_ref.ml
+   dune-package
+   hardcaml_workbench_provider.a
+   hardcaml_workbench_provider.cma
+   hardcaml_workbench_provider.cmi
+   hardcaml_workbench_provider.cms
+   hardcaml_workbench_provider.cmt
+   hardcaml_workbench_provider.cmx
+   hardcaml_workbench_provider.cmxa
+   hardcaml_workbench_provider.ml
+   hardcaml_workbench_provider__Backend_id.cmi
+   hardcaml_workbench_provider__Backend_id.cms
+   hardcaml_workbench_provider__Backend_id.cmt
+   hardcaml_workbench_provider__Backend_id.cmx
+   hardcaml_workbench_provider__Build_ref.cmi
+   hardcaml_workbench_provider__Build_ref.cms
+   hardcaml_workbench_provider__Build_ref.cmt
+   hardcaml_workbench_provider__Build_ref.cmx
+   hardcaml_workbench_provider__Id.cmi
+   hardcaml_workbench_provider__Id.cms
+   hardcaml_workbench_provider__Id.cmt
+   hardcaml_workbench_provider__Id.cmx
+   hardcaml_workbench_provider__Run_ref.cmi
+   hardcaml_workbench_provider__Run_ref.cms
+   hardcaml_workbench_provider__Run_ref.cmt
+   hardcaml_workbench_provider__Run_ref.cmx
+   hardcaml_workbench_provider__Runner.cmi
+   hardcaml_workbench_provider__Runner.cms
+   hardcaml_workbench_provider__Runner.cmsi
+   hardcaml_workbench_provider__Runner.cmt
+   hardcaml_workbench_provider__Runner.cmti
+   hardcaml_workbench_provider__Runner.cmx
+   hardcaml_workbench_provider__Validation.cmi
+   hardcaml_workbench_provider__Validation.cms
+   hardcaml_workbench_provider__Validation.cmsi
+   hardcaml_workbench_provider__Validation.cmt
+   hardcaml_workbench_provider__Validation.cmti
+   hardcaml_workbench_provider__Validation.cmx
+   hardcaml_workbench_provider__Wire.cmi
+   hardcaml_workbench_provider__Wire.cms
+   hardcaml_workbench_provider__Wire.cmt
+   hardcaml_workbench_provider__Wire.cmx
+   id.ml
+   opam
+   run_ref.ml
+   runner.ml
+   runner.mli
+   validation.ml
+   validation.mli
+   wire.ml))
+ (libexec (hardcaml_workbench_provider.cmxs))
+ (doc (README.md)))
+(library
+ (name hardcaml_workbench_provider)
+ (kind normal)
+ (archives
+  (byte hardcaml_workbench_provider.cma)
+  (native hardcaml_workbench_provider.cmxa))
+ (plugins
+  (byte hardcaml_workbench_provider.cma)
+  (native hardcaml_workbench_provider.cmxs))
+ (native_archives hardcaml_workbench_provider.a)
+ (requires
+  core
+  core_unix
+  ppx_compare.runtime-lib
+  ppx_here.runtime-lib
+  basement
+  ppx_sexp_conv.runtime-lib
+  sexplib0
+  ppx_assert.runtime-lib
+  ppx_enumerate.runtime-lib
+  ppx_hash.runtime-lib
+  ppx_bench.runtime-lib
+  ppx_bench.config
+  bin_prot
+  ppx_inline_test.config
+  ppx_inline_test.runtime-lib
+  ppx_expect.runtime
+  ppx_expect.config
+  fieldslib
+  ppx_string.runtime
+  ppx_log.types
+  ppx_log.syntax
+  ppx_module_timer.runtime
+  ppx_portable.runtime
+  base_quickcheck.ppx_quickcheck.runtime
+  base_quickcheck
+  base
+  ppx_stable_witness.runtime
+  ppx_string_conv.runtime
+  ppx_typed_fields.typed_fields_lib
+  ppx_typed_fields.typed_variants_lib
+  sexplib
+  typerep
+  variantslib)
+ (main_module_name Hardcaml_workbench_provider)
+ (modes byte native)
+ (modules
+  (wrapped
+   (group
+    (alias
+     (obj_name hardcaml_workbench_provider)
+     (visibility public)
+     (kind alias)
+     (source
+      (path Hardcaml_workbench_provider)
+      (impl (path hardcaml_workbench_provider.ml-gen))))
+    (name Hardcaml_workbench_provider)
+    (modules
+     (module
+      (obj_name hardcaml_workbench_provider__Backend_id)
+      (visibility public)
+      (source (path Backend_id) (impl (path backend_id.ml))))
+     (module
+      (obj_name hardcaml_workbench_provider__Build_ref)
+      (visibility public)
+      (source (path Build_ref) (impl (path build_ref.ml))))
+     (module
+      (obj_name hardcaml_workbench_provider__Id)
+      (visibility public)
+      (source (path Id) (impl (path id.ml))))
+     (module
+      (obj_name hardcaml_workbench_provider__Run_ref)
+      (visibility public)
+      (source (path Run_ref) (impl (path run_ref.ml))))
+     (module
+      (obj_name hardcaml_workbench_provider__Runner)
+      (visibility public)
+      (source (path Runner) (intf (path runner.mli)) (impl (path runner.ml))))
+     (module
+      (obj_name hardcaml_workbench_provider__Validation)
+      (visibility public)
+      (source
+       (path Validation)
+       (intf (path validation.mli))
+       (impl (path validation.ml))))
+     (module
+      (obj_name hardcaml_workbench_provider__Wire)
+      (visibility public)
+      (source (path Wire) (impl (path wire.ml))))))
+   (wrapped true))))

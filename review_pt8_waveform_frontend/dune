@@ -1,0 +1,11 @@
+(executable
+ (name review)
+ (modules review)
+ (libraries core terminal_presentation hardcaml_workbench_protocol hardcaml_workbench_workspaces)
+ (preprocess (pps ppx_jane)))
+
+(executable
+ (name async_review)
+ (modules async_review)
+ (libraries async core terminal_presentation hardcaml_workbench_protocol)
+ (preprocess (pps ppx_jane)))

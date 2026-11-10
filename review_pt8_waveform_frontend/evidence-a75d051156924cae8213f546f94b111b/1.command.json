@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "/home/wayne/devel/jane/hardcaml_workbench/_build_pt8_workbench/default/review_pt8_waveform_frontend/review.exe"
+  ],
+  "cwd": "/home/wayne/devel/jane/hardcaml_workbench",
+  "exit_code": 0,
+  "max_jobs": 2,
+  "eda_allocation": 0
+}

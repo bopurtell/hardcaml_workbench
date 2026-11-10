@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "flock",
+    "/tmp/opencode/workbench-pt8-build.lock",
+    "opam",
+    "exec",
+    "--switch=5.2.0+ox",
+    "--",
+    "dune",
+    "build",
+    "-j2",
+    "--build-dir",
+    "_build_pt8_workbench",
+    "review_pt8_waveform_frontend/review.exe",
+    "review_pt8_waveform_frontend/async_review.exe"
+  ],
+  "cwd": "/home/wayne/devel/jane/hardcaml_workbench",
+  "exit_code": 1,
+  "max_jobs": 2,
+  "eda_allocation": 0
+}

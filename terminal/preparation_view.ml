@@ -104,10 +104,7 @@ let selection ~remembered ~(asic : Asic.Snapshot.t option) =
          let endpoint =
            Option.bind asic ~f:(fun a ->
              List.find a.flows ~f:(fun f -> String.equal f.id p.flow))
-           |> Option.bind ~f:(fun f ->
-             if List.mem f.fresh_stage_endpoints "synthesis" ~equal:String.equal
-             then Some "synthesis"
-             else List.hd f.fresh_stage_endpoints)
+           |> Option.bind ~f:Launch_preferences.default_endpoint
          in
          (match endpoint with
           | None -> Error "Choose an explicit selected-flow endpoint in Plan first"

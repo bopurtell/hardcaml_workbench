@@ -45,6 +45,25 @@ let suffix (a : S.Artifact.t) =
   else ".bin"
 ;;
 
+(* Embedded admission is deliberately stricter than general export's file suffix. *)
+let vcd_media (a : S.Artifact.t) =
+  List.mem
+    [ "text/vcd"; "text/x-vcd"; "application/vcd"; "application/x-vcd" ]
+    (String.lowercase a.media_type)
+    ~equal:String.equal
+;;
+
+let embedded_vcd a =
+  let open Or_error.Let_syntax in
+  let%bind size, _ = identity a in
+  if not (vcd_media a)
+  then Or_error.error_string "No supported VCD: publish a text/vcd waveform artifact"
+  else if size <= 0 || size > Waveform_data.default_limits.max_bytes
+  then
+    Or_error.error_string "Embedded VCD must be nonempty and <=8 MiB; use artifact export"
+  else Ok ()
+;;
+
 let digest_chunks chunks =
   let hash = Cryptokit.Hash.sha256 () in
   List.iter chunks ~f:hash#add_string;
@@ -166,6 +185,41 @@ let%test_unit "chunk hashing matches raw SHA256 across byte boundaries without \
   =
   let chunks = [ "\000\255"; ""; "\r\n"; String.make 65536 '\128' ] in
   assert (String.equal (digest_chunks chunks) (Plain_rpc.digest (String.concat chunks)))
+;;
+
+let%test_unit "native FIFO text/x-vcd admission retains exact MIME and artifact guards" =
+  let artifact : S.Artifact.t =
+    { id = "fifo-waveform"
+    ; attempt_id = "fifo-attempt"
+    ; case_id = Some "directed"
+    ; label = "FIFO trace"
+    ; kind = "trace"
+    ; media_type = "text/x-vcd"
+    ; size = Some 64
+    ; sha256 = Some (String.make 64 'a')
+    ; availability = Available
+    }
+  in
+  List.iter
+    [ "text/vcd"; "text/x-vcd"; "TEXT/X-VCD"; "application/vcd"; "application/x-vcd" ]
+    ~f:(fun media_type ->
+      assert (Or_error.is_ok (embedded_vcd { artifact with media_type })));
+  List.iter
+    [ "text/x-vcd-extra"
+    ; "text/plain"
+    ; "application/json"
+    ; "application/x-fst"
+    ; "text/x-vcd; charset=utf-8"
+    ]
+    ~f:(fun media_type ->
+      assert (Or_error.is_error (embedded_vcd { artifact with media_type })));
+  List.iter
+    [ { artifact with size = Some 0 }
+    ; { artifact with size = Some (Waveform_data.default_limits.max_bytes + 1) }
+    ; { artifact with sha256 = None }
+    ; { artifact with sha256 = Some "bad" }
+    ]
+    ~f:(fun artifact -> assert (Or_error.is_error (embedded_vcd artifact)))
 ;;
 
 let%test_unit "multi-page export publishes exact host bytes and launches only after hash \

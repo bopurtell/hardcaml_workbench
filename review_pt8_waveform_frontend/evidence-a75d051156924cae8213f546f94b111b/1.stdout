@@ -1,0 +1,73 @@
+PASS JSON cursor opens same-case sibling VCD
+PASS JSON cursor remains unchanged
+PASS host actions only selected-case VCD
+PASS host w uses sibling VCD while e uses JSON
+PASS JSON independently inspectable
+PASS JSON-only unavailable
+PASS JSON-only truthful reason
+PASS other case never changes default
+PASS explicit case switch routes exact
+PASS wrong attempt same artifact id
+PASS host action rejects wrong attempt same artifact id
+PASS wrong case same artifact id
+PASS host action rejects wrong case same artifact id
+PASS missing case metadata same artifact id
+PASS host action rejects missing case metadata same artifact id
+PASS missing size
+PASS host action rejects missing size
+PASS negative size
+PASS host action rejects negative size
+PASS zero size
+PASS host action rejects zero size
+PASS oversize
+PASS host action rejects oversize
+PASS missing digest
+PASS host action rejects missing digest
+PASS uppercase digest
+PASS host action rejects uppercase digest
+PASS short digest
+PASS host action rejects short digest
+PASS nonhex digest
+PASS host action rejects nonhex digest
+PASS missing availability
+PASS host action rejects missing availability
+PASS changed availability
+PASS host action rejects changed availability
+PASS misleading MIME
+PASS host action rejects misleading MIME
+PASS JSON suffix illusion
+PASS host action rejects JSON suffix illusion
+PASS FST
+PASS host action rejects FST
+PASS selector rejects case absent from captured selection
+FINDING host action must reject case absent from captured selection
+PASS MIME allowed: text/vcd
+PASS MIME allowed: application/vcd
+PASS MIME allowed: application/x-vcd
+PASS MIME allowed: TEXT/VCD
+PASS MIME deliberately unsupported: text/vcd; charset=utf-8
+PASS MIME deliberately unsupported: text/vcd 
+PASS MIME deliberately unsupported: application/vnd.gtkwave.vcd
+PASS 8MiB boundary admitted
+PASS general export suffix separate from admission
+PASS restored missing
+PASS restored digest changed
+PASS restored size changed
+PASS restored unavailable
+PASS restored exact identity remains usable
+FINDING restored case drift must not retarget
+FINDING restored missing case must not retarget
+FINDING restored MIME drift must not retarget
+PASS picker exact attempt/case/MIME
+PASS picker bounded128
+PASS changed digest does not mark old picker pin
+PASS case metadata drift does not mark old picker pin
+PASS late old attempt receipt ignored
+PASS exact byte page accepted
+PASS page wrong attempt
+PASS page wrong id
+PASS page digest drift
+PASS page wrong size
+PASS logs remain attempt-wide exact job
+PASS logs never substitute restarted daemon job
+TOTAL 72 FINDINGS 4

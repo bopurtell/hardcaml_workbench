@@ -1,0 +1,18 @@
+File "review_pt8_waveform_frontend/async_review.ml", line 35, characters 38-47:
+35 |     ~fetch:(fun ~offset:_ ~limit:_ -> Ivar.fill requested (); Ivar.read gate) in
+                                           ^^^^^^^^^
+Error (alert deprecated): Async.Ivar.fill
+[since 2023-04] Use [fill_exn]
+
+File "review_pt8_waveform_frontend/async_review.ml", line 38, characters 2-11:
+38 |   Ivar.fill gate (Ok (page "616263"));
+       ^^^^^^^^^
+Error (alert deprecated): Async.Ivar.fill
+[since 2023-04] Use [fill_exn]
+
+File "review_pt8_waveform_frontend/async_review.ml", line 49, characters 17-56:
+49 |   don't_wait_for (main () >>| fun () -> Shutdown.exit 0);
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error: This expression has type "'a Deferred.t Deferred.t"
+       but an expression was expected of type "unit Deferred.t"
+       Type "'a Deferred.t" is not compatible with type "unit"

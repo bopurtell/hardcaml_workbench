@@ -1398,6 +1398,9 @@ let planned_asic_source_rows host tile =
       in
       headline
       @ List.take selection 1
+      @ (if Planned_run.equal_status model.status Failed
+         then [ { Planned_run.role = Error; text = model.message } ]
+         else [])
       @ [ { Planned_run.role = Fact
           ; text = Planned_run.launch_label model ^ ": " ^ model.launch.message
           }
@@ -1540,7 +1543,13 @@ let planned_formatted_rows ?indicator_frames host tile ~width =
       then None
       else if i = 0
       then Some (plan_indicator model.status)
-      else if i = if detail then 1 else 2
+      else if i
+              =
+              if detail
+              then 1
+              else if Planned_run.equal_status model.status Failed
+              then 3
+              else 2
       then Some (producer_indicator model.launch.state)
       else None
     in
@@ -8990,7 +8999,10 @@ let%test_unit "WB-054 artifact keyboard seam dispatches unavailable selection re
           | _ -> assert false
         in
         match snd dispatch with
-        | Unavailable reason -> assert (String.equal reason expected)
+        | Unavailable reason ->
+          if Char.equal key 'w'
+          then assert (String.is_substring reason ~substring:"No available supported VCD")
+          else assert (String.equal reason expected)
         | _ -> assert false))
 ;;
 
@@ -9004,8 +9016,8 @@ let%test_unit "WB-054 production selection catalog promotes original runnable id
     ; label = "waves"
     ; kind = "waveform"
     ; media_type = "text/vcd"
-    ; size = None
-    ; sha256 = None
+    ; size = Some 123
+    ; sha256 = Some (String.make 64 'a')
     ; availability = Available
     }
   in
@@ -9122,6 +9134,9 @@ let%test_unit "WB-054 production selection catalog promotes original runnable id
                 (H.catalog empty_artifacts ~project:None ~jobs:[])))
     in
     match action with
-    | Unavailable reason -> assert (String.equal reason "no artifact selected")
+    | Unavailable reason ->
+      if Char.equal key 'w'
+      then assert (String.is_substring reason ~substring:"No available supported VCD")
+      else assert (String.equal reason "no artifact selected")
     | _ -> assert false)
 ;;

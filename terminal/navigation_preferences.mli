@@ -46,6 +46,7 @@ type t =
   ; active : string option
   ; workspaces : workspace list
   ; workloads : (string * Workloads_view.saved) list
+  ; testing_artifacts : (string * Hardcaml_workbench_protocol.Simulation.Artifact.t) list
   }
 
 (** All operations raise on invalid data, following the other preference sidecars. IDs are
@@ -62,6 +63,12 @@ val create
   -> t
 
 val with_workloads : t -> (string * Workloads_view.saved) list -> t
+
+val with_testing_artifacts
+  :  t
+  -> (string * Hardcaml_workbench_protocol.Simulation.Artifact.t) list
+  -> t
+
 val encode : t -> string
 val decode : project_key:string -> string -> t
 

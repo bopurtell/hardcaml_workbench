@@ -1,1 +1,23 @@
-(data_only_dirs test)
+(alias
+ (name test-contracts)
+ (deps (alias test/contracts)))
+
+(alias
+ (name test-backend)
+ (deps (alias test/backend)))
+
+(alias
+ (name test-presentation)
+ (deps (alias test/presentation)))
+
+(alias
+ (name test-setup)
+ (deps (alias test/setup)))
+
+(alias
+ (name test-api)
+ (deps (alias test/api)))
+
+(alias
+ (name test-local)
+ (deps (alias test/local)))

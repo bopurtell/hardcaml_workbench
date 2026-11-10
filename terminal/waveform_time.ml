@@ -3,6 +3,7 @@ open! Core
 type scale =
   | Cells_per_tick of int
   | Ticks_per_cell of int
+  | Window_cells of { compressed : bool }
 
 type cursor =
   | Left
@@ -15,6 +16,7 @@ type t =
   ; start : int64
   ; stop : int64
   ; scale : scale
+  ; cells : (int64 * int64) array option
   }
 
 let scale_of_code code =
@@ -31,6 +33,7 @@ let capacity ~code ~columns =
   match scale_of_code code with
   | Cells_per_tick n -> (columns + n - 1) / n
   | Ticks_per_cell n -> columns * n
+  | Window_cells _ -> assert false
 ;;
 
 let create ~code ~columns ~start ~stop =
@@ -40,7 +43,39 @@ let create ~code ~columns ~start ~stop =
   ; start
   ; stop = Int64.(start + min (stop - start) (of_int length - 1L))
   ; scale = scale_of_code code
+  ; cells = None
   }
+;;
+
+(* Divide before multiplying: even [0,max_value] never forms an inclusive length. *)
+let offset distance numerator denominator =
+  let d = Int64.of_int denominator
+  and n = Int64.of_int numerator in
+  Int64.((distance / d * n) + (rem distance d * n / d))
+;;
+
+let create_window ~columns ~start ~stop =
+  if columns < 1 || columns > 4096 || Int64.(start < 0L || stop < start)
+  then invalid_arg "Invalid waveform window";
+  let distance = Int64.(stop - start) in
+  let compressed = Int64.(distance >= of_int columns) in
+  let cells =
+    Array.init columns ~f:(fun i ->
+      if compressed
+      then (
+        let first = Int64.(start + offset distance i columns) in
+        let last =
+          if i = columns - 1
+          then stop
+          else Int64.(start + offset distance (Int.succ i) columns - 1L)
+        in
+        first, last)
+      else (
+        let denominator = Int.max 1 (columns - 1) in
+        let tick = Int64.(start + offset distance i denominator) in
+        tick, tick))
+  in
+  { columns; start; stop; scale = Window_cells { compressed }; cells = Some cells }
 ;;
 
 let columns t = t.columns
@@ -54,32 +89,46 @@ let cursor t time =
   else if Int64.(time > t.stop)
   then Right
   else (
-    let delta = Int64.(time - t.start) in
-    let column =
-      match t.scale with
-      | Cells_per_tick n -> Int64.(delta * of_int n)
-      | Ticks_per_cell n -> Int64.(delta / of_int n)
-    in
-    (* [create] bounded the visible window before this multiplication, so an
+    match t.cells with
+    | Some cells ->
+      let rec search i =
+        if i = t.columns - 1 || Int64.(time <= snd cells.(i))
+        then Column i
+        else search (i + 1)
+      in
+      search 0
+    | None ->
+      let delta = Int64.(time - t.start) in
+      let column =
+        match t.scale with
+        | Cells_per_tick n -> Int64.(delta * of_int n)
+        | Ticks_per_cell n -> Int64.(delta / of_int n)
+        | Window_cells _ -> assert false
+      in
+      (* [create] bounded the visible window before this multiplication, so an
        expanded tick's first cell is always in [0, columns). *)
-    Column (Int64.to_int_exn column))
+      Column (Int64.to_int_exn column))
 ;;
 
 let cell_bounds t ~column =
   if column < 0 || column >= t.columns
   then None
   else (
-    let offset, count =
-      match t.scale with
-      | Cells_per_tick n -> column / n, 1
-      | Ticks_per_cell n -> column * n, n
-    in
-    let offset = Int64.of_int offset in
-    if Int64.(offset > t.stop - t.start)
-    then None
-    else (
-      let first = Int64.(t.start + offset) in
-      Some (first, Int64.(first + min (t.stop - first) (of_int count - 1L)))))
+    match t.cells with
+    | Some cells -> Some cells.(column)
+    | None ->
+      let offset, count =
+        match t.scale with
+        | Cells_per_tick n -> column / n, 1
+        | Ticks_per_cell n -> column * n, n
+        | Window_cells _ -> assert false
+      in
+      let offset = Int64.of_int offset in
+      if Int64.(offset > t.stop - t.start)
+      then None
+      else (
+        let first = Int64.(t.start + offset) in
+        Some (first, Int64.(first + min (t.stop - first) (of_int count - 1L)))))
 ;;
 
 let format_time (timescale : Waveform_data.timescale) time =
@@ -106,6 +155,30 @@ let format_time (timescale : Waveform_data.timescale) time =
   number ^ " " ^ unit_
 ;;
 
+let format_compact (timescale : Waveform_data.timescale) time =
+  let raw = format_time timescale time |> String.lsplit2_exn ~on:' ' |> fst in
+  let units = [| "fs"; "ps"; "ns"; "us"; "ms"; "s" |] in
+  let initial =
+    match timescale.unit_ with
+    | Fs -> 0
+    | Ps -> 1
+    | Ns -> 2
+    | Us -> 3
+    | Ms -> 4
+    | S -> 5
+  in
+  let groups = Int.min (5 - initial) ((String.length raw - 1) / 3) in
+  if groups = 0
+  then raw ^ " " ^ units.(initial)
+  else (
+    let split = String.length raw - (groups * 3) in
+    let fraction = String.drop_prefix raw split |> String.rstrip ~drop:(Char.equal '0') in
+    String.prefix raw split
+    ^ (if String.is_empty fraction then "" else "." ^ fraction)
+    ^ " "
+    ^ units.(initial + groups))
+;;
+
 type label =
   { tick : int64
   ; column : int
@@ -119,7 +192,7 @@ type ruler =
   ; minor_columns : int list
   }
 
-let ruler t ~timescale =
+let legacy_ruler t ~timescale =
   let last_column =
     match cursor t t.stop with
     | Column c -> c
@@ -135,6 +208,7 @@ let ruler t ~timescale =
     match t.scale with
     | Cells_per_tick n -> Int.max 1 ((desired_cells + n - 1) / n)
     | Ticks_per_cell n -> desired_cells * n
+    | Window_cells _ -> assert false
   in
   let rec nice power =
     match List.find [ power; power * 2; power * 5 ] ~f:(fun n -> n >= minimum_step) with
@@ -146,11 +220,13 @@ let ruler t ~timescale =
     match t.scale with
     | Cells_per_tick _ -> step
     | Ticks_per_cell n -> (step + n - 1) / n * n
+    | Window_cells _ -> assert false
   in
   let minor =
     match t.scale with
     | Cells_per_tick _ -> Int.max 1 (step / 5)
     | Ticks_per_cell n -> Int.max (2 * n) (step / 5 / n * n)
+    | Window_cells _ -> assert false
   in
   let aligned stride =
     let stride = Int64.of_int stride in
@@ -217,6 +293,34 @@ let ruler t ~timescale =
   { labels; major_columns; minor_columns }
 ;;
 
+let ruler t ~timescale =
+  match t.cells with
+  | None -> legacy_ruler t ~timescale
+  | Some _ ->
+    let labels = ref [] in
+    List.iter
+      [ 0; t.columns - 1; t.columns / 2; t.columns / 4; 3 * t.columns / 4 ]
+      ~f:(fun column ->
+        let tick, _ = Option.value_exn (cell_bounds t ~column) in
+        let column =
+          match cursor t tick with
+          | Column c -> c
+          | _ -> assert false
+        in
+        let text = format_compact timescale tick in
+        let text_column = Int.min column (t.columns - String.length text) in
+        if text_column >= 0
+           && List.for_all !labels ~f:(fun l ->
+             text_column + String.length text + 2 <= l.text_column
+             || l.text_column + String.length l.text + 2 <= text_column)
+        then labels := { tick; column; text_column; text } :: !labels);
+    { labels =
+        List.sort !labels ~compare:(fun a b -> Int.compare a.text_column b.text_column)
+    ; major_columns = List.map !labels ~f:(fun l -> l.column)
+    ; minor_columns = []
+    }
+;;
+
 let%test_unit "exact mapping, compressed/expanded partial end and huge physical units" =
   let expanded = create ~code:1 ~columns:10 ~start:100L ~stop:200L in
   assert (Int64.equal (stop expanded) 102L);
@@ -252,6 +356,43 @@ let%test_unit "exact mapping, compressed/expanded partial end and huge physical 
     String.equal
       (format_time { magnitude = 10; unit_ = Ps } 9007199254740993L)
       "90071992547409930 ps")
+;;
+
+let%test_unit "inclusive physical windows cover extreme bounds at every resolution" =
+  List.iter
+    [ 0L, Int64.max_value
+    ; Int64.(max_value - 9L), Int64.max_value
+    ; 9007199254740993L, 9007199254741000L
+    ; 17L, 17L
+    ; 0L, 1L
+    ]
+    ~f:(fun (start, stop) ->
+      List.iter [ 1; 2; 5; 80; 4096 ] ~f:(fun columns ->
+        let t = create_window ~columns ~start ~stop in
+        assert (Int64.equal t.start start && Int64.equal t.stop stop);
+        let previous = ref start in
+        for column = 0 to columns - 1 do
+          let a, b = Option.value_exn (cell_bounds t ~column) in
+          assert (Int64.(a >= start && b >= a && b <= stop));
+          if column > 0 then assert (Int64.(a = !previous || a - !previous = 1L));
+          previous := b;
+          List.iter [ a; b ] ~f:(fun tick ->
+            match cursor t tick with
+            | Column c ->
+              let x, y = Option.value_exn (cell_bounds t ~column:c) in
+              assert (Int64.(x <= tick && tick <= y))
+            | _ -> assert false)
+        done;
+        assert (Int64.equal !previous stop);
+        assert (Option.is_none (cell_bounds t ~column:columns));
+        let r = ruler t ~timescale:{ magnitude = 100; unit_ = Fs } in
+        List.iter r.labels ~f:(fun l ->
+          assert (l.text_column >= 0 && l.text_column + String.length l.text <= columns))));
+  assert (String.equal (format_compact { magnitude = 1; unit_ = Ps } 13070000L) "13.07 us");
+  assert (
+    String.equal
+      (format_compact { magnitude = 100; unit_ = Ns } Int64.max_value)
+      "922337203685.4775807 s")
 ;;
 
 let%test_unit "ruler labels stay exact, separate and inside real cells at all UI widths" =

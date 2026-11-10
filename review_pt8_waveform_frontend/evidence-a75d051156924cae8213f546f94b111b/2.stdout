@@ -1,0 +1,4 @@
+PASS actual export digest verifies before publication
+PASS changed actual bytes rejected despite claimed correct digest
+PASS late byte reply after owner replacement cannot publish
+PASS replacement owner independently loads verified bytes

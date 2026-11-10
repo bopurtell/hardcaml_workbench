@@ -1,0 +1,33 @@
+{
+  "contract": "hardcaml-asic.flow-list",
+  "schema_version": 1,
+  "declaration": {
+    "contract": "hardcaml-asic.flow-catalog",
+    "schema_version": 1,
+    "entries": [{
+      "methodology": {
+        "id": "standard", "label": "Standard", "description": "Fresh classic implementation",
+        "backend_recipe": "librelane.classic.v1", "input": "fresh",
+        "endpoints": ["synthesis", "floorplan", "placement", "cts", "routing", "signoff"],
+        "configurable": [], "defaults": []
+      },
+      "profiles": [
+        {"id": "balanced", "label": "Balanced", "description": "Balanced", "assignments": []},
+        {"id": "synth_delay", "label": "Synthesis delay", "description": "Delay", "assignments": []}
+      ],
+      "default_profile": "balanced"
+    }],
+    "default": {"flow": "standard", "profile": "balanced"}
+  },
+  "parameter_descriptors": [],
+  "capabilities": {
+    "backend_recipe": "librelane.classic.v1", "input": "fresh",
+    "stage_selection": "complete-prefix-through-declared-endpoint",
+    "continuation": false, "arbitrary_overrides": false,
+    "selection": {
+      "flow": "stable-id-or-null", "profile": "stable-id-or-null",
+      "profile_requires_flow": true, "unknown_selection": "error",
+      "no_selection": "catalog-default-pair", "flow_only": "entry-default-profile"
+    }
+  }
+}

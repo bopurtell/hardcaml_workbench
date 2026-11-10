@@ -5,6 +5,23 @@ re-exported by `protocol/simulation.ml`; application RPC/history types remain th
 The daemon endpoint, supervisor integration, terminal experience and real Cyclesim
 provider are implemented and verified; see [controls and acceptance](fs2_acceptance.md).
 
+## Terminology and workload composition
+
+A **suite** groups declared **cases**. A case is a runnable configured test/scenario;
+an **attempt** is one actual execution with captured selection/seed/parameters.
+A project may implement its case using one or more workloads. A **workload** is a
+scenario contract: stimulus is one component, alongside execution assumptions/rules,
+completion, expected observations/checking requirements and measurement rules.
+Reusable drivers, scoreboards/assertions and monitors implement those requirements;
+the contract does not require a single workload class or ownership of the whole
+verification environment. In UVM terms, sequences/items cover the traffic portion.
+
+FS2v1 exposes suites/cases and execution events, **not** an arbitrary workload graph
+or N-workload selection API. PT.8's project-owned cases execute one fixed memory
+workload each through this same runner and publish a separately verified result
+contract. See [workload terminology](../../hardcaml_asic/docs/guides/variant-comparison.md#terminology-stimulus-workload-test-and-suite).
+This clarification changes no frozen wire schema or execution behavior.
+
 ## Configuration and process invocation
 
 **Native OCaml adapter support delivered 2026-10-18:** the separately packaged

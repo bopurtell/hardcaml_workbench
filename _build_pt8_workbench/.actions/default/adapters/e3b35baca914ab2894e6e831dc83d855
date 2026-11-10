@@ -1,0 +1,1 @@
+adapters/simulation_adapter.pp.mli: Core Dune_adapter Hardcaml_workbench_project_integration Hardcaml_workbench_protocol V1

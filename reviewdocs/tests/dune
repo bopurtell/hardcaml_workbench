@@ -1,0 +1,5 @@
+(executable
+ (name development_waveform_probe)
+ (modules development_waveform_probe)
+ (libraries core terminal_presentation hardcaml_workbench_protocol)
+ (preprocess (pps ppx_jane)))

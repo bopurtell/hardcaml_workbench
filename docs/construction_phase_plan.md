@@ -1,5 +1,119 @@
 # Hardcaml Workbench — Demo construction plan
 
+New-session context: [cross-repository recovery checkpoint](session_checkpoint.md).
+It summarizes the ASIC PT.0–PT.8 track, paused acceptance and preservation rules
+without replacing this queue or the ASIC queue. Refactor continuation plans are
+grouped under [migration guides](migration_guides/README.md).
+
+## Test organization alongside example-verification refactor — 2026-11-10
+
+Owner requests clearer subsystem, shared-support and application-integration test
+ownership, independently of the example's ongoing verification refactor.
+[Bounded first restructuring plan](test_organization_plan.md) adds a test inventory,
+root `test/` index and named selectors over current registrations, preserving all
+fixture/evidence bytes and existing subsystem tests.
+
+- [x] Document actual ownership/registration and example-sensitive boundaries.
+- [x] Add explicit local suite selectors with fixture projects still data-only.
+- [x] Verify selected Workbench-only suites and document remaining migration gaps.
+
+No example changes, hardware verification or EDA; the developer synthesis acceptance
+remains paused. Nested job-budget/Git-fixture constraints are documented rather
+than hidden by an outer Dune limit.
+
+Delivered first slice: [test ownership guide](testing.md), [root index](../test/README.md)
+and [verification receipt](test_suite_selection_verification.md). Six named selectors
+reuse current registrations; contracts/presentation forced reruns pass. Existing
+fixture projects remain data-only and default runtest registration is unchanged.
+Backend/API/local and setup execution are not claimed; nested-budget/Git-fixture
+hardening, shared-support extraction and app-integration script migration remain
+separate follow-ups. No example or hardware/EDA execution occurred.
+
+## Active ordinary developer workflow acceptance — 2026-11-06
+
+Owner authorized section-1 closeout: production client startup, FIFO pass/failure
+investigation, PT.8 comparison, fresh synthesis, report/check inspection and
+same-session restart/reopen. [Bounded acceptance and execution allocation](developer_workflow_acceptance_plan.md)
+requires durable automated TUI tests with separately identified supporting RPCs,
+one actual synthesis under the supported six-worker ceiling and no P&R.
+
+- [x] Production startup/FIFO/PT.8 workflows and exact evidence associations.
+- [ ] Fresh synthesis through the TUI and actual report/check inspection.
+- [ ] Same-store restart/reopen, independent evidence/resource review and closeout.
+
+Use only test-owned private state; existing live owner sessions/evidence remain
+unchanged. Passing metadata/preparation is not synthesis completion.
+
+Checkpoint: [phase-1 handoff](developer_workflow_acceptance_handoff.md) records
+actual simulation/TUI and simulation-restart passes. The fresh synthesis/report
+and post-synthesis restart routes remain **paused and unexecuted**, pending explicit
+resource activation, monitor integration/review and coordination with the example's
+verification refactor. Pending work is not a running background job.
+
+## Development synthesis Git-context correction — 2026-11-05
+
+Owner's synthesis attempt completed elaboration but failed collateral revision
+admission. The development launcher's global source Git selectors contaminated
+`git -C` support-tools/PDK probes. Corrected source-scoped real-Git dispatch keeps
+revision checks strict and source context local. Independent installed preparation
+and public metadata preflight pass on the retained user's bundle, with a genuine
+wrong-revision negative still rejecting. No synthesis or physical flow was run.
+The active user capture/history remains unchanged; adoption uses an explicit
+stopped-daemon same-store refresh. [Recovery and evidence](development_git_context_recovery.md).
+
+## Unified development session and waveform time navigation — 2026-11-05
+
+Owner requests a coherent everyday example session, not another PT.8-only demo.
+[Bounded implementation plan](development_session_plan.md) defines exclusive slices,
+combined FIFO/PT.8 catalog, stable editable source/state and explicit refresh, and
+bounded event-aware waveform Default/Fit over exact retained physical time.
+
+- [x] Stable source-complete setup with pinned app/provider/library environment.
+- [x] Combined real FIFO and PT.8 Testing suites, assertions/results/VCD handoffs.
+- [x] Useful time-aware default, full-trace Fit, truthful compressed graph cells.
+- [x] Real same-session UI/restart/refresh acceptance and independent review.
+
+Existing root configuration/live pairs/evidence remain unchanged. No new EDA.
+
+Delivered: [stable development launch/workflow guide](development_session.md).
+Fixed editable project `.dev/workbench-development/project`, generation
+`26f0d5e474bc4d45b5fc5859325c162d`, with captured matching apps and explicit refresh.
+Native same-session FIFO normal/mismatch and PT.8 execution, useful waveform
+Default/Fit and exact cursor, Workloads comparison, normal ASIC preparation and
+history/restart/refresh gates pass. Independent waveform86 controls, lifecycle38
+plus migration24 checks and final installed-capture audit pass after documented
+corrections. Ordinary private test/asic_test/timing targets and coordinator
+Workbench `@all @runtest` pass. Stable user daemon remains for manual launch;
+earlier sessions/captures/evidence are preserved.
+
+## PT.8 fresh simulation → Waveforms recovery — 2026-11-05
+
+Owner found result-reference JSON opened as a waveform, with no VCD in the
+attempt. [Bounded plan](pt8_waveform_recovery_plan.md) is delivered: explicit
+six-interface-signal capture/publication, exact case/attempt VCD handoff, truthful
+no-VCD availability and preserved JSON Workloads inspection. Mixed known/X/Z
+windows retain known graphs and mark unknown lanes without inventing values.
+Independent review corrected producer admission/publication and restored artifact/
+palette membership gaps. Final real Flops/Exact direct cases and production
+Testing→fresh Exact→quick/dedicated Waveforms pass in `session-waveforms-final-01`;
+same-execution raw signal samples, original counters and standard public Plan pass.
+See [final evidence](pt8_waveform_final_acceptance.md) and
+[updated launch guide](pt8_workloads.md). Existing sessions/results remain unchanged;
+no EDA or user-pair restart occurred. User visual acceptance remains manual.
+
+## Standard Plan / private-session recovery — 2026-11-05
+
+Owner reported blank endpoint input and failed staging in the provided PT.8
+session. Corrected catalog-derived initial endpoint selection, retained failure
+diagnostics and exact quoted-assignment roundtrips. The example recovery setup
+now supplies independent source inputs and matching provider build environment.
+Actual production-client Plan/Preparation staging and enabled Launch-and-view
+controls pass against `session-standard-recovery-02`, without physical submission.
+Both profiles × seven endpoints plan successfully; private source build/emission
+and a fresh Exact workload pass. Original user session remains unchanged.
+See [review and recovery commands](standard_plan_recovery.md) and
+[independent endpoint review](pt8_endpoint_independent_review.md).
+
 ## Active PT.8 workload inspection and execution — 2026-11-05
 
 User authorized the Workbench integration of the accepted PT.8 library/example

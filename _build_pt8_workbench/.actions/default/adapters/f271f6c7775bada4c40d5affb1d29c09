@@ -1,0 +1,1 @@
+adapters/project_driver_adapter.pp.ml: Backend_id Build_ref Configuration Configuration_id Core Dune_adapter Hardcaml_workbench_project_integration Hardcaml_workbench_protocol Int List Option Ppx_bench_lib Ppx_expect_runtime Ppx_inline_test_lib Ppx_module_timer_runtime Project_id Run_ref Target Target_fact Target_id

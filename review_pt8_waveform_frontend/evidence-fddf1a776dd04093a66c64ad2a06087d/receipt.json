@@ -1,0 +1,13 @@
+{
+  "production_and_tests_unchanged": true,
+  "findings": [
+    "FINDING restored case drift must not retarget",
+    "FINDING restored missing case must not retarget",
+    "FINDING restored MIME drift must not retarget"
+  ],
+  "binaries": {
+    "_build_pt8_workbench/default/terminal/main.exe": "b9d8957511d66b89be9bd48bad643ac0de73c43efe8896bf0d58c735999b21c2",
+    "_build_pt8_workbench/default/daemon/main.exe": "ec0108fd3ae65ac8bc8113462bfc1eb4dcdcbecf6410c144fbc982113f495a38"
+  },
+  "eda_allocation": 0
+}

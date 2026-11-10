@@ -1,0 +1,33 @@
+(data_only_dirs fixtures baselines pt8_frontend_review)
+
+(alias
+ (name contracts)
+ (deps
+  (alias_rec ../protocol/runtest)
+  (alias_rec ../provider/runtest)
+  (alias_rec ../project_integration/runtest)
+  (alias_rec ../adapters/runtest)))
+
+(alias
+ (name backend)
+ (deps (alias_rec ../backend/test/runtest)))
+
+(alias
+ (name presentation)
+ (deps (alias_rec ../terminal/runtest)))
+
+(alias
+ (name setup)
+ (deps (alias_rec ../setup/test/runtest)))
+
+(alias
+ (name api)
+ (deps (alias_rec ../daemon/test/runtest)))
+
+(alias
+ (name local)
+ (deps
+  (alias contracts)
+  (alias backend)
+  (alias presentation)
+  (alias setup)))

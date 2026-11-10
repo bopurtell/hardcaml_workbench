@@ -1,9 +1,60 @@
 # PT.8 Workloads — launch, inspect, compare and run
 
+For everyday FIFO **and** PT.8 development, use the
+[stable combined development session](development_session.md). The feature-specific
+session commands below remain a retained focused workflow, not the primary entry point.
+
 2026-11-05. **Bounded integration accepted:** actual retained evidence and a fresh
 example implementation-RTL workload were exercised through the production client.
 The existing example root configuration and PT.6 session remain unchanged. This
 guide opens a separate prepared PT.8 session; no additional build is required.
+
+**Standard-flow recovery, 2026-11-05:** incorporated into the waveform-enabled
+`session-waveforms-final-01` below.
+The original config-only PT.8 session supported workload simulation but omitted
+the source closure required by normal Plan/Preparation. The recovery session
+includes an independent source snapshot, matching provider libraries and private
+build/results paths. The endpoint form now prefills from advertised endpoints and
+preserves quoted assignments. See [real UI recovery acceptance](standard_plan_recovery.md).
+
+**Waveform recovery:** the initial PT.8 provider published only result-reference
+JSON, not VCD. The new session captures and publishes actual six-signal VCDs and
+keeps JSON workload inspection separate. Historical runs are preserved and do not
+gain invented waveforms. See [final waveform acceptance](pt8_waveform_final_acceptance.md).
+
+## What “workload” means here
+
+**The workload is the scenario contract; stimulus is one of its components.**
+It specifies input operations/data together with execution assumptions and rules,
+completion, defined expected observations and measurement rules/window. The testbench
+driver, assertions/reference model/checker and monitors implement those requirements;
+they can remain reusable environment components rather than one monolithic object.
+For UVM users, sequence items correspond to raw stimulus, and a sequence/virtual
+sequence corresponds to the traffic part of a workload. The full contract also
+covers rules normally distributed across test configuration, checking and monitors.
+
+| Term | Meaning in this workflow |
+| --- | --- |
+| Stimulus | Raw operations, transactions and logical input data |
+| Workload | The stimulus plus scenario assumptions/rules, completion, expected behavior and measurement rules |
+| Test/case | A runnable configuration that executes a scenario and checks its behavior |
+| Suite | A collection of selectable cases |
+| Attempt | One actual execution of selected cases with concrete inputs |
+| Result | Outcomes, measurements, identities and retained evidence from that execution |
+| Waveform | Recorded signal activity; not the entire verification result |
+
+```text
+pt8-memory-workloads suite
+├── flops256 case → fixed memory workload on the Flops implementation
+└── exact256 case → same logical workload on the supported SRAM implementation
+```
+
+Conceptually a case may consume several workloads. Today these two cases each
+consume one fixed workload, with multiple internal traffic phases. There is no
+arbitrary N-workload composition feature or separate workload runner. Hardware
+variant, concrete driver/model/image artifacts and execution identities remain
+separate from the logical workload. See the
+[provider terminology and contract](../../hardcaml_asic/docs/guides/variant-comparison.md#terminology-stimulus-workload-test-and-suite).
 
 ## Start the session
 
@@ -12,7 +63,7 @@ Terminal1:
 ```bash
 cd /home/wayne/devel/jane/hardcaml_asic_example
 opam exec --switch=5.2.0+ox -- python3 -B scripts/pt8_workbench_launch.py daemon \
-  --session .dev/asic-pt8-workbench/session-final-review-01
+  --session .dev/asic-pt8-workbench/session-waveforms-final-01
 ```
 
 Leave that foreground daemon running. In Terminal2:
@@ -20,7 +71,7 @@ Leave that foreground daemon running. In Terminal2:
 ```bash
 cd /home/wayne/devel/jane/hardcaml_asic_example
 opam exec --switch=5.2.0+ox -- python3 -B scripts/pt8_workbench_launch.py client \
-  --session .dev/asic-pt8-workbench/session-final-review-01
+  --session .dev/asic-pt8-workbench/session-waveforms-final-01
 ```
 
 The daemon chooses an available port and publishes it in this session's discovery
@@ -30,8 +81,9 @@ session state. The launchers use prebuilt matching Workbench binaries in
 state and daemon state. They do not use `.dev/asic-pt6/current`, install dependencies,
 restart another daemon or change the root example's FIFO/ASIC configurations.
 
-The private provider is fully prebuilt. This workload path needs no inherited
-`hardcaml_asic.execution` library environment to rebuild the example during a run.
+The private workload provider is fully prebuilt. The launcher also supplies the
+matching `hardcaml_asic.execution` library environment for standard-flow source
+builds in the independent private example snapshot.
 The normal root example's separately configured source-build flow still needs its
 own matching activation environment; see [Resources launch](resource_inspector.md).
 
@@ -88,9 +140,27 @@ attempt/case-bound reference artifact, checks its byte digest and opens the reta
 result with the expected public source digest. Capture it as A or B and compare it
 explicitly with the retained result or another fresh result.
 
+### Open the fresh waveform
+
+For a fresh run in this capture-enabled session, select the intended attempt and
+case in Testing, then focus **Artifacts**. Press **w** for the quick embedded
+viewer or **Shift-W** for the dedicated Waveforms workspace. The palette also
+offers **Open embedded waveform** and **Open dedicated Waveforms workspace** for
+the exact VCD. A JSON cursor can resolve the same case's VCD sibling; it is never
+passed to the VCD parser. JSON-only historical attempts explain that no VCD was
+published, while their independent Workloads result inspection still works.
+
+The VCD shows clock, enable, active-low write command (`rst_n`, not memory reset),
+address (`ui_in`), write low byte (`uio_in`) and response (`q`). Unknown initial
+memory responses remain X. At time0 the known lanes render while q's lane says
+**X/Z in window; no graph**; exact X values remain visible. This is a bounded
+two-state graph fallback, not full four-state plotting. Press **:** and enter
+**2595000** (1ps ticks) to view the first defined response, **13C6**. No storage
+array/vendor hierarchy dump is produced; each accepted capture is about64KB.
+
 The complete new evidence closure lives under
-`hardcaml_asic_example/.dev/asic-pt8-workbench/workloads/`, outside FS2's disposable
-work directories. A reference artifact is not a copy of the complete evidence.
+the private session project's `.dev/asic-pt8-workbench/workloads/`, outside FS2's
+disposable work directories. A reference artifact is not a copy of the complete evidence.
 Simulation success, functional verification and performance availability are shown
 separately. Readable failure/partial evidence does not become a performance pass.
 
