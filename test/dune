@@ -1,6 +1,10 @@
 (data_only_dirs fixtures baselines pt8_frontend_review)
 
 (alias
+ (name native-smoke)
+ (deps (alias ../terminal/test-native-smoke)))
+
+(alias
  (name contracts)
  (deps
   (alias_rec ../protocol/runtest)
@@ -25,9 +29,14 @@
  (deps (alias_rec ../daemon/test/runtest)))
 
 (alias
+ (name support)
+ (deps (alias_rec support/runtest)))
+
+(alias
  (name local)
  (deps
   (alias contracts)
   (alias backend)
   (alias presentation)
-  (alias setup)))
+   (alias setup)
+   (alias support)))

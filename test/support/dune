@@ -1,0 +1,16 @@
+; Controlled Python clients only. Keep the compatibility import/help closure
+; explicit so the tests run using sandbox inputs rather than the source checkout.
+(rule
+ (alias runtest)
+ (deps
+  (sandbox always)
+  test_terminal.py
+  __init__.py
+  screen.py
+  terminal.py
+  ../../scripts/test-fs0.py
+  ../../scripts/test-fs0-dashboard.py
+  ../../scripts/test-fs2-native.py
+  ../../scripts/fixtures/fs2_wire.py)
+ (action
+  (run timeout 30s python3 -B %{dep:test_terminal.py} -v)))

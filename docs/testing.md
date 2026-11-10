@@ -37,6 +37,8 @@ than sorting every two-module test into a global folder.
 
 ## Current layout
 
+Continuation delivered: [bounded execution and support/smoke verification](test_refactor_verification.md).
+
 ```text
 protocol/                  production code and some inline contracts
   test/                    additional codec/validation contracts
@@ -52,6 +54,7 @@ terminal/                  presentation code, inline tests and focused test modu
 scripts/                   many opt-in HTTP/PTY/installed/real-provider/EDA harnesses
 test/
   dune                     index/selectors over existing subsystem tests
+  support/                 shared PTY/screen helpers and controlled regression tests
   fixtures/                DATA ONLY, including miniature projects
   baselines/               DATA ONLY, expected terminal captures
   pt8_frontend_review/     DATA ONLY, retained review inputs
@@ -78,18 +81,20 @@ See [root test README](../test/README.md) for commands and explicit constraints.
 | `@test-backend` | backend tests recursively |
 | `@test-setup` | setup tests |
 | `@test-api` | daemon HTTP/RPC tests, selected separately |
-| `@test-local` | contracts + backend + presentation + setup; API is NOT included |
+| `@test-support` | shared test helpers, compatibility imports and failure/cleanup controls |
+| `@test-native-smoke` | opt-in synthetic terminal waveform handoff with real daemon/client |
+| `@test-local` | contracts + backend + presentation + setup + support; API and native smoke are NOT included |
 
-These are mixed unit/contract/local-integration groups over existing actions. They
-do not imply complete API or frontend coverage. `@runtest` remains as before; the
-new aliases do not add opt-in scripts or real EDA to its default closure.
+These are mixed unit/contract/local-integration groups. They do not imply complete
+API or frontend coverage. Shared helper tests now join `@runtest`; native smoke
+remains opt-in and no real EDA is added to the default closure.
 
-Contracts and presentation were actually rerun and passed in this slice. The
-backend/API/local groups were not executed: existing test-service Git-fixture
-writes and nested `-j20` build paths conflict with the current execution policy.
-Setup was inspected only. **An outer Dune `-j2` is not proof that a nested process
-uses two jobs.** The next local-runner hardening should resolve these constraints
-before advertising an unattended, uniformly low-budget aggregate.
+Contracts/presentation/API passed together at `-j2`; backend and setup passed
+separately at `-j1`. RPC fixtures now explicitly select nested `-j1`. The owner
+permits disposable Git fixture authoring. Setup deliberately launches twelve
+initializers, so run it separately under the shared lock. The combined local
+aggregate has not been executed or bounded as a concurrent group. **An outer
+Dune limit still does not override subprocess budgets.**
 
 Native PTY scripts, actual hardware providers, retained external evidence and EDA
 need their own explicit input/budget/registration policy. This pass did not run or
@@ -132,8 +137,10 @@ Safe next steps, in separate small migrations:
    its evolving DUT suite. Keep actual verification outcomes separate from tool
    correctness assertions and retain historical producer/evidence identities.
 
-These future directories/migrations are not claimed implemented. We first made
-the existing ownership and execution selection visible. A universal scheduler,
+Steps 1–3 have an initial delivered slice: explicit RPC budgets, shared screen/PTY
+support with ten controlled tests, and the terminal-owned native waveform smoke.
+HTTP/session support extraction and broader app-wide migration remain pending;
+`test/integration/` is still proposed. A universal scheduler,
 automatic change-impact oracle and full external-input fingerprint system are
 outside this first slice.
 

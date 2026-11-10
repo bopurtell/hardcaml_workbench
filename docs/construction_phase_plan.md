@@ -5,6 +5,25 @@ It summarizes the ASIC PT.0–PT.8 track, paused acceptance and preservation rul
 without replacing this queue or the ASIC queue. Refactor continuation plans are
 grouped under [migration guides](migration_guides/README.md).
 
+## Tool-test refactor continuation — 2026-11-10
+
+Owner authorized implementation with up to three implementation agents, a shared
+20-job ceiling and disposable scripted Git fixtures permitted; owner-checkout Git
+publication/authorship mutations remain prohibited.
+
+- [x] Make nested RPC build budgets explicit and verify actual child argv.
+- [x] Extract shared PTY/screen support with compatibility exports and helper tests.
+- [x] Register an opt-in controlled native smoke with explicit sandbox dependencies.
+- [x] Independently review and verify local groups under inspected execution budgets.
+- [ ] Continue shared HTTP/process support and app-wide driver migrations.
+- [ ] Reconcile external integration with the refactored example's current interfaces.
+
+[Verification and execution limits](test_refactor_verification.md): backend/setup
+passed separately at `-j1`; contracts/presentation/API passed at `-j2`; ten shared
+support tests and seven native smoke assertions passed. The smoke stays terminal-
+owned. `test/integration/` migration and combined local-aggregate execution remain
+pending. No sibling changes or real EDA execution in this slice.
+
 ## Test organization alongside example-verification refactor — 2026-11-10
 
 Owner requests clearer subsystem, shared-support and application-integration test

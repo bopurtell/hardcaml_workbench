@@ -162,6 +162,16 @@ button/form. Existing raw keys/screens/HTTP/byte identities and failed receipts 
 
 ## 7. Parallel Workbench test-refactor checkpoint
 
+**Continuation update, 2026-11-10:** explicit nested RPC budgets, shared PTY/screen
+support and opt-in sandboxed native smoke are delivered. See
+[current verification](test_refactor_verification.md). Backend/setup passed
+separately at `-j1`, contracts/presentation/API at `-j2`, ten support tests and
+seven native assertions passed. Disposable Git fixtures are now explicitly
+permitted by the owner. `test/support/` exists; `test/integration/` migration is
+still pending. The original first-slice snapshot below is historical. Its blanket
+backend/API execution prohibition is superseded for the verified configurations;
+combined aggregate parallelism remains unverified.
+
 First bounded slice is complete: [root index](../test/README.md),
 [ownership guide](testing.md), [inventory](testing_inventory.md) and
 [selector verification](test_suite_selection_verification.md).

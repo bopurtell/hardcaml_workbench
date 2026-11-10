@@ -1,5 +1,11 @@
 # Workbench test inventory and locality boundaries
 
+**Continuation update:** [current refactor verification](test_refactor_verification.md)
+records shared `test/support/` PTY/screen helpers, registered support/native-smoke
+selectors and bounded local-suite execution. The tables below retain the original
+pre-extraction inventory; the waveform-handoff script is now registered under the
+opt-in native-smoke selector and FS0/FS2 use shared support.
+
 2026-11-10. Source-only research slice. Paths below are relative to the Workbench
 checkout unless explicitly identified as external. This is a representative
 catalogue, not an exhaustive test count or a new execution/implementation queue.

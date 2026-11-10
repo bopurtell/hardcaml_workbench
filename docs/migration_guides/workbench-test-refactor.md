@@ -1,7 +1,7 @@
 # Workbench test-refactor continuation handoff
 
-**Snapshot: 2026-11-10. First organization slice complete; remaining refactor not
-started.** Owner requested this cache so another session can continue independently
+**Updated: 2026-11-10. First organization slice and initial execution/support/native
+smoke refactor complete.** Owner requested this cache so another session can continue independently
 of the ongoing `hardcaml_asic_example` verification refactor.
 
 Start with [the overall session checkpoint](../session_checkpoint.md). The
@@ -10,6 +10,29 @@ queue. This handoff groups migration steps; it is not a second queue or authoriz
 to run hardware/EDA or modify the sibling example.
 
 ## 1. Goal and accepted ownership policy
+
+### Current continuation checkpoint
+
+[Implemented changes and verified commands](../test_refactor_verification.md)
+supersede the original blockers and proposed-only status below:
+
+- Disposable scripted Git fixtures are permitted by the owner's clarified policy;
+  no owner-checkout staging/commit/push/authorship mutation is permitted.
+- RPC fixtures now explicitly request nested one-job Dune execution. Backend/setup
+  passed separately at outer `-j1`; contracts/presentation/API passed at `-j2`.
+  Setup intentionally launches twelve initializers; keep those runs isolated.
+- `test/support/` now contains shared screen/PTY helpers. Ten controlled tests are
+  registered as `@test-support`, normal `runtest`, and part of `@test-local`.
+- Terminal-owned `@test-native-smoke` is registered, sandboxed and passed seven
+  synthetic waveform-handoff assertions. It remains opt-in.
+- Independent review corrections and targeted reruns are complete. Broader shared
+  HTTP/process extraction, app-wide driver migration and example compatibility
+  remain next work. `test/integration/` is still proposed.
+
+The numbered sections below retain the original migration plan/history. Statements
+that all support extraction is unimplemented or backend/API execution is blocked
+describe the first slice, not this updated checkpoint. Use the current root test
+README and verification page for execution commands and limits.
 
 Make software tool tests discoverable, selectable, bounded and independent of
 the example's evolving verification techniques. Preserve current tests/evidence

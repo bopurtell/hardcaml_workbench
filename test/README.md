@@ -1,7 +1,7 @@
 # Workbench tool-test entry points
 
 Tests are mostly **owned by their subsystems**, not collected as source files here.
-This directory is the suite index plus shared fixture/baseline storage. The
+This directory is the suite index, shared test support and fixture/baseline storage. The
 application's **Testing workspace** runs project-declared cases; that is a different
 thing from the tests of Workbench itself.
 
@@ -22,14 +22,18 @@ starting with the [overall checkpoint](../docs/session_checkpoint.md).
 | `@test-backend` | backend/test recursively | Service/process/cache/storage and controlled-provider integration |
 | `@test-setup` | setup/test | Initialization/config/CLI/filesystem integration |
 | `@test-api` | daemon/test | Native local HTTP/RPC server integration |
-| `@test-local` | contracts + presentation + backend + setup | Aggregate; **excludes API, opt-in native scripts and real EDA** |
+| `@test-support` | test/support | Shared PTY/screen helper contracts and compatibility imports |
+| `@test-native-smoke` | terminal waveform handoff | Opt-in synthetic daemon/client HTTP/PTY integration |
+| `@test-local` | contracts + presentation + backend + setup + support | Aggregate; **excludes API, native smoke and real EDA** |
 
 These aliases select existing actions; they are not new coverage or "unit-only"
-labels. Existing default `@runtest` registration is unchanged. `local` describes
+labels. Shared-support tests now participate in default `@runtest`; native smoke
+remains opt-in. `local` describes
 input ownership, not absence of subprocesses, Git fixture writes or nested builds.
 
-Verified in this restructuring: contracts and presentation were forcibly rerun and
-passed under the shared build lock, switch5.2.0+ox and explicit `-j2`. Example:
+Contracts, presentation and API passed forced reruns together at `-j2`. Backend
+and setup each passed separately at `-j1`; support and native smoke passed with
+copy sandboxing. Use the shared lock and explicit budgets. Example:
 
 ```bash
 flock /tmp/opencode/workbench-pt8-build.lock \
@@ -37,12 +41,20 @@ flock /tmp/opencode/workbench-pt8-build.lock \
   --build-dir _build_pt8_workbench @test-contracts @test-presentation
 ```
 
-**Execution constraints:** backend/API/local were inspected but not run in this
-slice. Backend service tests perform Git initialization/config/add/commit in a
-disposable fixture. API tests reach a nested `-j20` Dune invocation; the outer
-limit does not override child argv. Setup was also not executed. Do not treat these
-aliases as resolving the current no-Git-mutation/job-budget policy. See
-[actual verification and remaining work](../docs/test_suite_selection_verification.md).
+Run backend and setup separately with `-j1`: setup intentionally starts twelve
+initializer processes. API tests explicitly request nested `-j1`; production
+adapter defaults remain unchanged. Disposable Git fixture authoring is permitted
+by the owner's clarified policy; owner-checkout staging/commits/pushes are not.
+The combined `@test-local` alias has not itself been rerun or given a concurrent
+resource bound. See [current verification](../docs/test_refactor_verification.md).
+
+For either new selector:
+
+```bash
+flock /tmp/opencode/workbench-pt8-build.lock \
+  opam exec --switch=5.2.0+ox -- dune build -j2 \
+  --build-dir _build_pt8_workbench --sandbox=copy --force @test-support @test-native-smoke
+```
 
 ## Data stays data
 
@@ -55,7 +67,7 @@ aliases as resolving the current no-Git-mutation/job-budget policy. See
 Their nested Dune files remain fixture bytes; they are not Workbench build targets.
 No existing fixtures, baselines, test sources or evidence were moved in this pass.
 
-Future app-wide integration drivers can live under `test/integration/`, and common
-test-only libraries/helpers under `test/support/`, after explicit dependency/runner
-migration. Those locations are a policy for subsequent work, **not implemented
-directories or a claim that the current `scripts/` harnesses have been moved**.
+`test/support/` now contains shared screen reconstruction and the PTY driver,
+with controlled regression tests. Historical script exports remain compatible.
+Future app-wide integration drivers can live under `test/integration/`; that
+migration remains pending. The waveform smoke stays with its terminal owner.

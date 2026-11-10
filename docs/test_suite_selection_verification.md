@@ -118,3 +118,9 @@ Execution tracing is subprocess evidence, not a filesystem-access trace.
 
 Both executed suites passed. The fixture-target rejection is an intentional
 negative check, not an unresolved suite failure.
+# Subsequent verification
+
+This page records the original selector-only slice. See
+[test refactor verification](test_refactor_verification.md) for the subsequent
+backend/setup/API passes, explicit nested budgets, shared support tests and
+registered synthetic native smoke.
