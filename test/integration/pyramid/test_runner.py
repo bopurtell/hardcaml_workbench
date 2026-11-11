@@ -61,7 +61,7 @@ class RegistrationTests(unittest.TestCase):
         self.actions = forms(HERE / "dune")
 
     def test_exact_public_selection_and_forwarding(self):
-        for endpoint in (*ENDPOINTS, "pyramid"):
+        for endpoint in (*ENDPOINTS, "pyramid", "preflight"):
             name = "real-" + endpoint
             root = next(f for f in self.root if field(f, "name") == ["test-" + name])
             self.assertEqual(field(root, "deps"), [["alias", "test/" + name]])
@@ -69,13 +69,16 @@ class RegistrationTests(unittest.TestCase):
             self.assertEqual(field(index, "deps"), [["alias", "integration/pyramid/" + name]])
 
     def test_external_rules_are_fresh_locked_and_explicit(self):
-        rules = [f for f in self.actions if f[0] == "rule" and field(f, "alias")[0].startswith("real-")]
+        rules = [f for f in self.actions if f[0] == "rule" and field(f, "alias")[0] in
+                 {"real-" + e for e in (*ENDPOINTS, "pyramid")}]
         self.assertEqual(len(rules), 9)
         locks = set()
         for rule in rules:
             with self.subTest(alias=field(rule, "alias")):
                 self.assertIn(["universe"], field(rule, "deps"))
                 self.assertIn(["sandbox", "none"], field(rule, "deps"))
+                for helper in ("resolve.py", "configure.py"):
+                    self.assertIn(helper, field(rule, "deps"))
                 locks.add(tuple(field(rule, "locks")))
                 action = list(flatten(field(rule, "action")))
                 self.assertEqual(action.count("%{dep:runner.py}"), 1)
@@ -83,6 +86,20 @@ class RegistrationTests(unittest.TestCase):
                 for app in ("daemon", "terminal"):
                     self.assertIn("%{exe:../../../" + app + "/main.exe}", action)
         self.assertEqual(locks, {("real-eda",)})
+
+    def test_preflight_is_sandboxed_without_executable_or_execution_dependencies(self):
+        rule = next(f for f in self.actions if field(f, "alias") == ["real-preflight"])
+        self.assertIn(["sandbox", "always"], field(rule, "deps"))
+        for helper in ("resolve.py", "configure.py"):
+            self.assertIn(helper, field(rule, "deps"))
+        self.assertEqual(field(rule, "locks"), [])
+        action = list(flatten(field(rule, "action")))
+        self.assertIn("--preflight-only", action)
+        self.assertNotIn("--endpoint", action)
+        self.assertNotIn("--pyramid", action)
+        self.assertFalse(any(x.startswith("%{exe:") for x in action))
+        self.assertEqual([d for d in field(rule, "deps") if isinstance(d, list) and d[0] == "alias"],
+                         [["alias", "real-inputs"]])
 
     def test_pyramid_is_one_serial_runner_invocation(self):
         for endpoint in (*ENDPOINTS, "pyramid"):
@@ -100,6 +117,8 @@ class RegistrationTests(unittest.TestCase):
             )
 
     def test_declared_runner_source_closure_is_self_contained(self):
+        inputs = next(f for f in self.actions if field(f, "name") == ["real-inputs"])
+        self.assertEqual(set(field(inputs, "deps")), {"runner.py", "resolve.py", "configure.py"})
         tree = ast.parse((HERE / "runner.py").read_text())
         imports = set()
         for node in ast.walk(tree):
@@ -141,7 +160,7 @@ class RegistrationTests(unittest.TestCase):
                 self.assertNotIn(key.name, {
                     prefix + endpoint
                     for prefix in ("real-", "test-real-")
-                    for endpoint in (*ENDPOINTS, "pyramid")
+                    for endpoint in (*ENDPOINTS, "pyramid", "preflight")
                 }, str(key))
                 pending.extend(graph.get(key, []))
             self.assertIn(HERE / "runtest", seen, "controlled regression must be selected")
@@ -165,6 +184,7 @@ class PrelaunchTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.dict(os.environ))
             os.environ.pop("HARDCAML_WORKBENCH_REAL_TEST_CONFIG", None)
+            os.environ["DUNE_SOURCEROOT"] = "/nonexistent/controlled-workspace"
             stack.enter_context(mock.patch.object(sys, "argv", [
                 str(HERE / "runner.py"), *arguments,
                 "--daemon", sys.executable,
@@ -188,7 +208,7 @@ class PrelaunchTests(unittest.TestCase):
                 self.reject_without_launch(["--endpoint", endpoint, "--config", ""], "config")
         self.reject_without_launch(["--pyramid", "--config", ""], "config")
 
-    def test_unset_config_environment_does_not_fall_back_to_a_real_project(self):
+    def test_unset_config_environment_requires_discoverable_source(self):
         self.reject_without_launch(["--endpoint", "elaboration"], "config")
 
     def test_missing_selection_is_not_an_implicit_full_flow(self):
@@ -276,6 +296,10 @@ class ControlledExecutionTests(unittest.TestCase):
         self.assertEqual(events, [(event, endpoint) for endpoint in expected
                                   for event in ("init", "execute", "close")])
         report_path, = set(self.evidence.glob("pyramid-*/result.json")) - prior_reports
+        inputs = json.loads((report_path.parent / "resolved-inputs.json").read_text())
+        self.assertEqual(inputs["mode"], "explicit")
+        snapshot, = (report_path.parent / "resolved-inputs").iterdir()
+        self.assertEqual(snapshot.read_bytes(), self.config_path.read_bytes())
         return json.loads(report_path.read_text())
 
     def test_each_endpoint_selects_one_fresh_rung_with_no_successor(self):
@@ -317,24 +341,44 @@ class ControlledExecutionTests(unittest.TestCase):
                 with self.subTest(key=key, value=invalid):
                     self.config[key] = {"signoff": invalid} if key == "endpoint_timeouts" else invalid
                     with self.cli(["--pyramid"]), mock.patch.object(self.runner, "preflight") as preflight:
-                        with self.assertRaisesRegex(ValueError, "positive finite timeout"):
+                        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
                             self.runner.main()
+                        self.assertEqual(error.exception.code, 2)
                         preflight.assert_not_called()
                     del self.config[key]
                     self.assertEqual(list(self.evidence.iterdir()), [])
 
-    def test_runner_lock_excludes_another_process_and_releases(self):
-        code = (
-            "import runpy,sys; m=runpy.run_path(sys.argv[1]); "
-            "c=m['locked'](sys.argv[2],.02); c.__enter__(); c.__exit__(None,None,None)"
-        )
-        command = [sys.executable, "-B", "-c", code, str(HERE / "runner.py"), self.config["serialization_lock"]]
+    def test_valid_environment_override_preflight_does_not_execute_or_lock(self):
+        with self.cli(["--preflight-only"]), \
+                mock.patch.dict(os.environ, HARDCAML_WORKBENCH_REAL_TEST_CONFIG=str(self.config_path)), \
+                mock.patch.object(self.runner, "locked", side_effect=AssertionError("preflight lock")), \
+                mock.patch.object(self.runner, "Rung", side_effect=AssertionError("real execution")):
+            index = sys.argv.index("--config")
+            del sys.argv[index:index + 2]
+            self.runner.main()
+        self.assertEqual(list(self.evidence.iterdir()), [])
+
+    def test_explicit_preflight_explains_required_application_flags(self):
+        output = io.StringIO()
+        with self.cli(["--preflight-only"]), contextlib.redirect_stderr(output):
+            for flag in ("--daemon", "--client"):
+                index = sys.argv.index(flag)
+                del sys.argv[index:index + 2]
+            with self.assertRaises(SystemExit) as error:
+                self.runner.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("explicit config overrides require both flags even with --preflight-only", output.getvalue())
+        self.assertEqual(list(self.evidence.iterdir()), [])
+
+    def test_runner_lock_excludes_independent_open_and_releases(self):
+        # flock operates on open file descriptions: independent opens conflict
+        # even within one process. Keep the fixture suite strictly single-process.
         with self.runner.locked(self.config["serialization_lock"], 1):
-            blocked = subprocess.run(command, capture_output=True, text=True, timeout=5)
-            self.assertNotEqual(blocked.returncode, 0)
-            self.assertIn("lock timeout", blocked.stderr)
-        released = subprocess.run(command, capture_output=True, text=True, timeout=5)
-        self.assertEqual(released.returncode, 0, released.stderr)
+            with self.assertRaisesRegex(ValueError, "lock timeout"):
+                with self.runner.locked(self.config["serialization_lock"], .02):
+                    self.fail("second open acquired held lock")
+        with self.runner.locked(self.config["serialization_lock"], .02):
+            pass
 
 
 class ConfigureTests(unittest.TestCase):
@@ -575,6 +619,192 @@ class ConfigureTests(unittest.TestCase):
                 derive(self.root, self.evidence, "standard", "balanced")
         self.assertFalse(self.evidence.exists())
         self.assertFalse(self.output.exists())
+
+
+class AutomaticResolutionTests(unittest.TestCase):
+    setUp = ConfigureTests.setUp
+    file = ConfigureTests.file
+    prepare = ConfigureTests.prepare
+
+    def resolver(self):
+        return runpy.run_path(str(HERE / "resolve.py"))
+
+    def prepare_common(self):
+        self.prepare()
+        # Legacy configure fixtures intentionally retain a different owner root
+        # config. Automatic discovery must instead enforce WB049 dual conflicts.
+        self.owner.unlink()
+        manifest = self.store / "simulation/manifest.json"
+        simulation = self.runner.sexp([["schema_version", "1"],
+                                       ["provider_args", ["-B", "provider.py", "--manifest", str(manifest)]]])
+        installed = self.file(self.selection / "config/hardcaml-workbench-simulation.sexp", simulation)
+        install_path = self.store / "install.json"
+        install = json.loads(install_path.read_text())
+        install["config_sha256"]["simulation"] = self.runner.digest(installed)
+        install_path.write_text(json.dumps(install))
+        for kind in ("asic", "preparation", "simulation"):
+            name = "hardcaml-workbench-" + kind + ".sexp"
+            self.file(self.root / ".workbench" / name, (self.selection / "config" / name).read_text())
+
+    def auto(self):
+        resolver = self.resolver()
+        helper = resolver["helper"]("configure")
+        return helper.derive(self.root, self.evidence, "standard", "balanced", current_common=True)
+
+    def test_current_common_and_main_are_required_no_old_json_fallback(self):
+        self.prepare_common()
+        config, inputs = self.auto()
+        self.assertEqual(config["flow"], "standard")
+        self.assertEqual(len([p for p in inputs["inputs_sha256"] if "/.workbench/" in p]), 3)
+        self.file(self.root / ".dev/workbench-pyramid/old.json", "stale config")
+        (self.root / ".workbench/hardcaml-workbench-asic.sexp").write_text("()")
+        with self.assertRaisesRegex(ValueError, "common config differs"):
+            self.auto()
+        self.assertFalse(self.evidence.exists())
+
+    def test_automatic_resolution_derives_fresh_each_time(self):
+        self.prepare_common()
+        (self.base / "hardcaml_asic_example").symlink_to(self.root, target_is_directory=True)
+        resolver = self.resolver()
+        with mock.patch.dict(resolver["resolve"].__globals__, source_root=lambda: self.base / "workbench"):
+            config, raw, inputs = resolver["resolve"]("")
+            self.assertEqual(inputs["mode"], "automatic")
+            self.assertEqual(config, json.loads(raw))
+            self.assertEqual(config["source_closure"][0]["source"], str(self.root))
+            (self.store / "install.json").unlink()
+            with self.assertRaisesRegex(ValueError, "missing prepared main.*workbench_main.py.*prepare --help"):
+                resolver["resolve"]("")
+
+    def test_root_only_current_configs_are_supported(self):
+        self.prepare_common()
+        for path in (self.root / ".workbench").iterdir():
+            path.rename(self.root / path.name)
+        (self.root / ".workbench").rmdir()
+        config, inputs = self.auto()
+        for kind, path in inputs["current_configs"].items():
+            self.assertEqual(path, str(self.root / ("hardcaml-workbench-" + kind + ".sexp")))
+            self.assertIn(path, config["sdk_identity_files"])
+        self.assertFalse(self.evidence.exists())
+
+    def test_identical_dual_files_select_common_and_track_both(self):
+        self.prepare_common()
+        for path in (self.root / ".workbench").iterdir():
+            self.file(self.root / path.name, path.read_text())
+        config, inputs = self.auto()
+        for kind, path in inputs["current_configs"].items():
+            self.assertEqual(path, str(self.root / ".workbench" / ("hardcaml-workbench-" + kind + ".sexp")))
+            self.assertIn(str(self.root / pathlib.Path(path).name), inputs["inputs_sha256"])
+        self.assertFalse(self.evidence.exists())
+
+    def test_dual_conflicts_rejected_before_semantic_comparison(self):
+        self.prepare_common()
+        for kind in ("asic", "preparation", "simulation"):
+            common = self.root / ".workbench" / ("hardcaml-workbench-" + kind + ".sexp")
+            for text in (common.read_text() + "\n", "()"):
+                with self.subTest(kind=kind, text=text):
+                    root_copy = self.file(self.root / common.name, text)
+                    with self.assertRaisesRegex(ValueError, "Conflicting configuration files.*different bytes"):
+                        self.auto()
+                    root_copy.unlink()
+        self.assertFalse(self.evidence.exists())
+
+    def test_selected_current_config_may_semantically_equal_installed_bytes(self):
+        self.prepare_common()
+        for path in (self.root / ".workbench").iterdir():
+            value = self.runner.parse(path.read_text())
+            path.write_text("\n" + self.runner.sexp(list(reversed(value))) + "\n")
+        _, inputs = self.auto()
+        self.assertEqual(len(inputs["current_configs"]), 3)
+        self.assertFalse(self.evidence.exists())
+
+    def test_unsafe_current_paths_rejected_including_unselected_root_copy(self):
+        self.prepare_common()
+        common = self.root / ".workbench/hardcaml-workbench-asic.sexp"
+        saved = common.read_text()
+        outside = self.file(self.base / "outside.sexp", saved)
+        for path in (common, self.root / common.name):
+            for kind in ("symlink", "dangling", "directory", "fifo", "oversize"):
+                with self.subTest(path=path, kind=kind):
+                    path.unlink(missing_ok=True)
+                    if kind == "symlink":
+                        path.symlink_to(outside)
+                    elif kind == "dangling":
+                        path.symlink_to(self.base / "missing")
+                    elif kind == "directory":
+                        path.mkdir()
+                    elif kind == "fifo":
+                        os.mkfifo(path)
+                    else:
+                        path.write_bytes(b" " * (1024 * 1024 + 1))
+                    with self.assertRaisesRegex(ValueError, "symlink configuration|bounded regular configuration"):
+                        self.auto()
+                    if path.is_dir() and not path.is_symlink():
+                        path.rmdir()
+                    else:
+                        path.unlink()
+                    common.write_text(saved)
+        self.assertFalse(self.evidence.exists())
+
+    def test_common_directory_symlink_is_rejected(self):
+        self.prepare_common()
+        directory = self.root / ".workbench"
+        moved = self.root / "configs"
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlink configuration path"):
+            self.auto()
+        self.assertFalse(self.evidence.exists())
+
+    def test_invalid_explicit_override_never_discovers(self):
+        resolver = self.resolver()
+        with mock.patch.dict(resolver["resolve"].__globals__, source_root=mock.Mock(side_effect=AssertionError("fallback"))):
+            with self.assertRaises(OSError):
+                resolver["resolve"](str(self.base / "missing.json"))
+            path = self.file(self.base / "invalid.json", "{}")
+            with self.assertRaises(ValueError):
+                resolver["resolve"](str(path))
+
+    def test_common_provider_cannot_silently_select_a_different_generation(self):
+        self.prepare_common()
+        path = self.root / ".workbench/hardcaml-workbench-asic.sexp"
+        path.write_text(path.read_text().replace(str(self.generation), str(self.root / ".dev/old-generation")))
+        with self.assertRaisesRegex(ValueError, "common config differs"):
+            self.auto()
+        self.assertFalse(self.evidence.exists())
+
+    def test_missing_common_config_is_an_error(self):
+        self.prepare_common()
+        (self.root / ".workbench/hardcaml-workbench-preparation.sexp").unlink()
+        with self.assertRaisesRegex(ValueError, "missing prepared main setup input"):
+            self.auto()
+        self.assertFalse(self.evidence.exists())
+
+    def test_dune_source_anchor_independent_of_sandbox_and_external_build_dir(self):
+        resolver = self.resolver()
+        checkout = self.base / "checkout"
+        self.file(checkout / ".git", "gitdir: elsewhere")
+        self.file(checkout / "dune-project", "(lang dune 3.0)")
+        self.file(checkout / "test/integration/pyramid/runner.py", "source")
+        with mock.patch.dict(os.environ, DUNE_SOURCEROOT=str(checkout)), \
+                mock.patch.dict(resolver["source_root"].__globals__, __file__="/external/build/.sandbox/id/default/test/integration/pyramid/resolve.py"):
+            self.assertEqual(resolver["source_root"](), checkout)
+
+    def test_preflight_only_is_read_only_and_launch_free(self):
+        self.prepare_common()
+        config, raw_inputs = self.auto()
+        raw = json.dumps(config).encode()
+        self.runner = load_runner()
+        resolver = mock.Mock()
+        resolver.resolve.return_value = (config, raw, raw_inputs)
+        with mock.patch.object(sys, "argv", ["runner.py", "--preflight-only"]), \
+                mock.patch.object(self.runner.importlib.util, "module_from_spec", return_value=resolver), \
+                mock.patch.object(self.runner.importlib.util, "spec_from_file_location") as spec, \
+                mock.patch.object(self.runner, "locked", side_effect=AssertionError("lock write")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("launch")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.runner.main()
+        self.assertFalse(self.evidence.exists())
+        self.assertFalse((self.root.parent / ".workbench-example-build.lock").exists())
 
 
 if __name__ == "__main__":

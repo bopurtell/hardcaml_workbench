@@ -32,19 +32,37 @@ across its independent rungs and consequently costs more than a signoff run alon
 
 ## Run an endpoint
 
-From `hardcaml_workbench`, this machine already has a prepared explicit config:
+From `hardcaml_workbench`, check the discovered setup without starting applications,
+building example sources, or running EDA:
 
 ```bash
-export HARDCAML_WORKBENCH_REAL_TEST_CONFIG=/home/wayne/devel/jane/hardcaml_asic_example/.dev/workbench-pyramid/real-tests-v2.json
-
-flock /home/wayne/devel/jane/.workbench-build.lock \
-  opam exec --switch=5.2.0+ox -- dune build -j2 \
-  --build-dir _build_pt8_workbench @test-real-placement
+opam exec --switch=5.2.0+ox -- dune build -j1 @test-real-preflight
 ```
 
-Replace the alias with `@test-real-timing` for one fresh timing run. Signoff is
+Run one fresh prefix through timing:
+
+```bash
+opam exec --switch=5.2.0+ox -- dune build -j1 @test-real-timing
+```
+
+No exported JSON path is required. If a previous shell still has
+`HARDCAML_WORKBENCH_REAL_TEST_CONFIG` set, unset it to use discovery. Signoff is
 explicitly `@test-real-signoff`. For a large-change qualification, explicitly select
 `@test-real-pyramid`. Neither is a default dependency.
+
+Discovery locates sibling `hardcaml_asic_example` from the Workbench source checkout,
+including when Dune uses a sandbox or an external build directory. It derives fresh
+settings from the example's prepared `.dev/workbench-main/install.json` and current
+ASIC/preparation/simulation companions, defaulting to `standard` / `balanced`.
+Legacy root-only and common-only configuration work; dual copies must be byte-identical.
+Current configuration must agree with the prepared installation. Missing/inconsistent
+setup fails with guidance; discovery never scans old generations or old pyramid JSON
+files and never installs dependencies automatically.
+
+Actual runs retain resolved settings, input hashes and byte snapshots with their
+evidence. Preflight is read-only and does not create evidence directories or acquire
+execution locks. It checks installation consistency, not physical-flow correctness
+or whether the machine is ready for a heavy run.
 
 Stop other heavy operations first, including owner-triggered flows in another
 session. The runner refuses visible competing work/containers rather than stopping
@@ -60,7 +78,12 @@ Every invocation creates a new `pyramid-<id>/` directory. It retains configurati
 source/tool identities, raw UI/RPC evidence, provider reports, per-rung results and
 cleanup records. It does not update the owner's project companions or app selection.
 
-## Configure another installation
+## Optional explicit configuration
+
+`HARDCAML_WORKBENCH_REAL_TEST_CONFIG` remains available for another installation,
+profile or deliberately pinned setup. A nonempty invalid override fails rather
+than falling back to automatic discovery. Historical `real-tests-v2.json` is an
+optional retained setup artifact, not required for ordinary testing.
 
 Prepare the example's [ordinary main installation](../../hardcaml_asic_example/docs/workbench_main.md)
 first. Then use the explicit config helper, choosing a **new output filename**:
@@ -72,6 +95,12 @@ python3 -B test/integration/pyramid/configure.py \
   --output /absolute/path/to/hardcaml_asic_example/.dev/workbench-pyramid/new-real-tests.json \
   --flow standard --profile balanced
 ```
+
+Set `HARDCAML_WORKBENCH_REAL_TEST_CONFIG` to that output when selecting a real alias.
+Explicit-config preflight through `runner.py --preflight-only --config PATH` also
+requires `--daemon PATH --client PATH`; it does not guess application paths from an
+arbitrary config. The public `@test-real-preflight` alias is intended for automatic
+discovery when no override is set.
 
 The helper performs no builds, simulations, EDA or daemon startup. It derives paths
 from the selected main installation and writes a config plus an input-identity
@@ -106,6 +135,8 @@ changing the owner's repository or contaminating toolchain/PDK Git queries.
 The runner serializes via a shared external execution lock, in addition to Dune's
 `real-eda` lock. Its source build uses the separate example build lock. Do not set
 the source build lock equal to an outer flock already held by Dune's caller.
+The runner does not acquire the outer Workbench build flock; Dune coordinates its
+own build directory. Do not run competing builds against that same directory.
 
 Source preparation records the production requested `-j6` and the test's executed
 `-j2` override. Normal named EDA retains its configured six-worker transport. These
@@ -120,13 +151,24 @@ rung's own budget serially. Provider per-call stage timeout is configured separa
 
 ## Actual verification — 2026-11-11
 
+**Auto-discovery update:** 44 fixture tests and 15 runner self-tests pass through
+the controlled Dune alias at `-j1`. Actual sandboxed preflight in an external build
+directory resolves main install `6704c0570bac455b9956a67c2b381f51`; a missing explicit
+override fails without fallback. No physical flow was executed for this update.
+The example apps/consumers were refreshed after bounded ASIC standard-suite
+qualification; the source-equivalent ASIC generation was retained. See
+[refresh and crash diagnosis](rebuild_discovery_verification.md).
+
+Historical physical-run evidence below predates this discovery update:
+
 **Implemented:** all eight endpoint selectors and the serial pyramid.
 **Actually executed here:** real Elaboration and real Synthesis only.
 **Not yet executed in this runner:** Floorplan, Placement, CTS, Routing, Timing,
 Signoff, or the full pyramid. Registration is not evidence that those runs passed.
 
 - 28 configuration/registration/orchestration controls and15 runner self-tests pass.
-- Actual missing-config `@test-real-synthesis` fails before provider/process launch.
+- Before discovery was implemented, missing-config `@test-real-synthesis` failed
+  before provider/process launch. Missing or invalid discovered setup now fails there.
 - Default exclusion was independently checked even with a real config selected.
 - Real Elaboration passed through the production client/server, with no physical run.
 - Corrected real `@test-real-synthesis` passed uninterrupted with66 assertions:

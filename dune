@@ -65,3 +65,7 @@
 (alias
  (name test-real-pyramid)
  (deps (alias test/real-pyramid)))
+
+(alias
+ (name test-real-preflight)
+ (deps (alias test/real-preflight)))

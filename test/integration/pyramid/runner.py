@@ -15,6 +15,8 @@ Optional: sdk_identity_files (absolute installed SDK/provider receipt paths),
 Signoff defaults to 7200 seconds; a positive explicit override is permitted.
 --daemon/--client are the prebuilt production applications supplied by Dune.
 --self-test performs controlled runner checks only, without external tools.
+With no config override, resolve the sibling example's current common configs
+and prepared main install afresh. --preflight-only validates setup read-only.
 """
 
 import argparse
@@ -22,6 +24,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -977,7 +980,7 @@ class Rung:
         require(not errors, "cleanup failed: " + str(errors))
 
 
-def preflight(config, args):
+def preflight(config, args, read_only=False):
     for key in ("provider", "dune", "python"):
         require(Path(config[key]).is_file() and os.access(config[key], os.X_OK), "installed executable missing: " + key)
     for path in (args.daemon, args.client):
@@ -986,8 +989,8 @@ def preflight(config, args):
         require(Path(config[key]).is_dir(), "installed directory missing: " + key)
     for path in config.get("sdk_identity_files", []):
         require(Path(path).is_file(), "installed identity file missing: " + path)
-    evidence = Path(config["evidence_root"]).resolve(strict=True)
-    require(evidence.is_dir(), "evidence_root must be an existing directory")
+    evidence = Path(config["evidence_root"]).resolve()
+    require((read_only and not evidence.exists()) or evidence.is_dir(), "evidence_root must be a directory")
     for key in ("toolchain", "support_tools", "pdk_root"):
         installed = Path(config[key]).resolve(strict=True)
         require(not evidence.is_relative_to(installed) and not installed.is_relative_to(evidence), "installed/evidence roots overlap")
@@ -1004,8 +1007,9 @@ def preflight(config, args):
     if "outer_build_lock" in config:
         require(Path(config["outer_build_lock"]).resolve() != Path(config["build_lock"]).resolve(), "outer_build_lock and build_lock resolve to the same lock")
     # Diagnose a busy pre-existing build lock before allocating evidence/children.
-    with locked(config["build_lock"], config.get("lock_timeout", 120)):
-        pass
+    if not read_only:
+        with locked(config["build_lock"], config.get("lock_timeout", 120)):
+            pass
 
 
 def verify_retained(capture):
@@ -1100,10 +1104,11 @@ def main():
     mode.add_argument("--endpoint", choices=ENDPOINTS)
     mode.add_argument("--pyramid", action="store_true")
     mode.add_argument("--self-test", action="store_true")
+    mode.add_argument("--preflight-only", action="store_true", help="read-only setup validation; no locks, builds, providers, or EDA")
     mode.add_argument("--verify-retained", type=Path, metavar="CAPTURE", help="read-only observation/report verification; never relaunch or change original status")
     parser.add_argument("--config", default=os.environ.get("HARDCAML_WORKBENCH_REAL_TEST_CONFIG", ""))
-    parser.add_argument("--daemon", type=Path)
-    parser.add_argument("--client", type=Path)
+    parser.add_argument("--daemon", type=Path, help="prebuilt daemon; required with an explicit config, including --preflight-only")
+    parser.add_argument("--client", type=Path, help="prebuilt client; required with an explicit config, including --preflight-only")
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -1111,13 +1116,24 @@ def main():
     if args.verify_retained:
         verify_retained(args.verify_retained)
         return
-    if not args.config or not Path(args.config).is_file():
-        parser.error("real execution requires an existing explicit --config / HARDCAML_WORKBENCH_REAL_TEST_CONFIG")
+    spec = importlib.util.spec_from_file_location("pyramid_resolution", Path(__file__).with_name("resolve.py"))
+    resolver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(resolver)
+    try:
+        config, raw, resolved_inputs = resolver.resolve(args.config)
+    except (ValueError, OSError, KeyError, TypeError, IndexError) as error:
+        parser.error("real setup config: " + str(error))
+    if args.preflight_only:
+        apps = resolved_inputs.get("prebuilt_apps", {})
+        args.daemon = args.daemon or (Path(apps["daemon"]) if "daemon" in apps else None)
+        args.client = args.client or (Path(apps["client"]) if "client" in apps else None)
     if args.daemon is None or args.client is None:
-        parser.error("--daemon and --client prebuilt applications required")
+        parser.error("--daemon and --client prebuilt applications required; explicit config overrides require both flags even with --preflight-only (no installed-app guessing)")
     args.daemon, args.client = args.daemon.resolve(strict=True), args.client.resolve(strict=True)
-    raw = Path(args.config).read_bytes()
-    config = validate_config(json.loads(raw))
+    if args.preflight_only:
+        preflight(config, args, read_only=True)
+        print(json.dumps(dict(status="ready", config=config, resolved_inputs=resolved_inputs), indent=2))
+        return
     interrupted = False
     def interrupt(signum, frame):
         nonlocal interrupted
@@ -1126,6 +1142,8 @@ def main():
             raise InterruptedError("runner interrupted by signal " + str(signum))
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
+    preflight(config, args, read_only=True)
+    Path(config["evidence_root"]).mkdir(parents=True, exist_ok=True)
     preflight(config, args)
     os.umask(0o077)
     endpoints = list(ENDPOINTS) if args.pyramid else [args.endpoint]
@@ -1135,9 +1153,18 @@ def main():
         base = Path(config["evidence_root"]).resolve() / ("pyramid-" + uuid.uuid4().hex)
         base.mkdir()
         (base / "config.json").write_bytes(raw)
-        report = dict(status="failed", config_path=str(Path(args.config).resolve()), config_sha256=hashlib.sha256(raw).hexdigest(),
+        require(all(digest(p) == h for p, h in resolved_inputs["inputs_sha256"].items()), "resolved setup inputs changed; retry")
+        save(base / "resolved-inputs.json", resolved_inputs)
+        snapshots = base / "resolved-inputs"
+        snapshots.mkdir()
+        for index, (path, expected) in enumerate(resolved_inputs["inputs_sha256"].items()):
+            target = snapshots / str(index)
+            shutil.copyfile(path, target)
+            require(digest(target) == expected, "resolved input changed while snapshotting: " + path)
+        report = dict(status="failed", config_path=resolved_inputs.get("config_path"), config_sha256=hashlib.sha256(raw).hexdigest(),
                       invocation=sys.argv, runner_sha256=digest(__file__),
-                      identities={str(p): digest(p) for p in (args.daemon, args.client, Path(config["provider"]), Path(config["dune"]), Path(config["python"]), *map(Path, config.get("sdk_identity_files", [])))},
+                       identities={**{str(p): digest(p) for p in (args.daemon, args.client, Path(config["provider"]), Path(config["dune"]), Path(config["python"]), *map(Path, config.get("sdk_identity_files", [])))},
+                                   **resolved_inputs["inputs_sha256"]},
                       installed_paths={k: config[k] for k in ("toolchain", "support_tools", "pdk_root")},
                       rungs=[dict(endpoint=e, requested=select_prefix(e), observed=None, status="not_run") for e in endpoints])
         print("Evidence: " + str(base), flush=True)
@@ -1478,7 +1505,7 @@ def self_test():
                 save(base / "config.json", config)
                 code = ("import importlib.util,sys;from pathlib import Path; "
                         "s=importlib.util.spec_from_file_location('r',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m); "
-                        "m.preflight=lambda *a:(Path(sys.argv[2]).write_text('ready'),m.locked(sys.argv[3],60).__enter__()); "
+                        "m.preflight=lambda *a,**k:(Path(sys.argv[2]).write_text('ready'),m.locked(sys.argv[3],60).__enter__()); "
                         "sys.argv=['runner','--endpoint','elaboration','--config',sys.argv[4],'--daemon',sys.executable,'--client',sys.executable];m.main()")
                 # The lambda's argv is rewritten by main's caller. Use immutable
                 # closure paths, not mutable argv, for this controlled preflight.

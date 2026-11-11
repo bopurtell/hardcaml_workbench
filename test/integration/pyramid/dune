@@ -3,7 +3,7 @@
 ; deliberately not a fan-out of endpoint aliases.
 (rule
  (alias real-elaboration)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint elaboration
@@ -13,7 +13,7 @@
 
 (rule
  (alias real-synthesis)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint synthesis
@@ -23,7 +23,7 @@
 
 (rule
  (alias real-floorplan)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint floorplan
@@ -33,7 +33,7 @@
 
 (rule
  (alias real-placement)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint placement
@@ -43,7 +43,7 @@
 
 (rule
  (alias real-cts)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint cts
@@ -53,7 +53,7 @@
 
 (rule
  (alias real-routing)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint routing
@@ -63,7 +63,7 @@
 
 (rule
  (alias real-timing)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint timing
@@ -73,7 +73,7 @@
 
 (rule
  (alias real-signoff)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --endpoint signoff
@@ -83,7 +83,7 @@
 
 (rule
  (alias real-pyramid)
- (deps (universe) (sandbox none) (alias real-inputs))
+ (deps (universe) (sandbox none) (alias real-inputs) resolve.py configure.py)
  (locks real-eda)
  (action
   (run python3 -B %{dep:runner.py} --pyramid
@@ -91,15 +91,22 @@
    --daemon %{exe:../../../daemon/main.exe}
    --client %{exe:../../../terminal/main.exe})))
 
-; runner.py is stdlib-only: no undeclared fixture or script imports. Production
+; Resolution helpers are stdlib-only and never install or launch tools. Production
 ; executable closures are tracked by the exe dependencies on each real action.
+(rule
+ (alias real-preflight)
+ (deps (universe) (sandbox always) (alias real-inputs) resolve.py configure.py)
+ (action
+  (run python3 -B %{dep:runner.py} --preflight-only
+   --config %{env:HARDCAML_WORKBENCH_REAL_TEST_CONFIG=})))
+
 (alias
  (name real-inputs)
- (deps runner.py))
+ (deps runner.py resolve.py configure.py))
 
 (rule
  (alias runtest)
- (deps (sandbox always) test_runner.py runner.py configure.py dune ../../../dune ../../dune)
+ (deps (sandbox always) test_runner.py runner.py resolve.py configure.py dune ../../../dune ../../dune)
  (action
   (progn
    (run timeout 30s python3 -B %{dep:test_runner.py} -v)

@@ -78,3 +78,7 @@
 (alias
  (name real-pyramid)
  (deps (alias integration/pyramid/real-pyramid)))
+
+(alias
+ (name real-preflight)
+ (deps (alias integration/pyramid/real-preflight)))

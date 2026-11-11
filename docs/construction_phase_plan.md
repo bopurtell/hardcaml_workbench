@@ -5,6 +5,16 @@ It summarizes the ASIC PT.0–PT.8 track, acceptance and preservation rules
 without replacing this queue or the ASIC queue. Refactor continuation plans are
 grouped under [migration guides](migration_guides/README.md).
 
+## Real-test discovery and bounded rebuild recovery — 2026-11-11
+
+Real endpoint/pyramid aliases now discover the sibling example's current prepared
+installation, with optional explicit override and no automatic installation. New
+`@test-real-preflight` validates read-only. Sandboxed/external-build discovery and
+44 controls plus15 self-tests pass. ASIC standard checks passed after three test
+corrections; refreshed example main apps/consumers and verified installed API usage.
+[Crash diagnosis, execution evidence and remaining limitations](rebuild_discovery_verification.md).
+Hardware/platform faults remain unresolved; no physical EDA was run in this update.
+
 ## WB-049 common project configuration — 2026-11-11
 
 Delivered `.workbench/` lookup for generic, ASIC, simulation and preparation

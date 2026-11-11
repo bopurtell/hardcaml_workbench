@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 
 
 def runner_module():
@@ -37,6 +38,49 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def setup_help(root):
+    return ("Prepare/refresh the example main installation explicitly (never automatic); "
+            "see: python3 -B " + str(Path(root) / "scripts/workbench_main.py") + " prepare --help")
+
+
+def read_current(path, max_bytes=64 * 1024):
+    """WB049 lookup inputs: bounded regular files, no symlink path components."""
+    for part in reversed((path, *path.parents)):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            return None
+        require(not stat.S_ISLNK(info.st_mode), "symlink configuration path: " + str(part))
+        require(part == path or stat.S_ISDIR(info.st_mode), "not a configuration directory: " + str(part))
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        os.close(fd)
+        raise ValueError("expected bounded regular configuration: " + str(path))
+    with os.fdopen(fd, "rb") as stream:
+        raw = stream.read(max_bytes + 1)
+        after = os.fstat(stream.fileno())
+        current = path.lstat()
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        require(len(raw) <= max_bytes and len(raw) == before.st_size and
+                identity(before) == identity(after) == identity(current) and path.resolve() == path,
+                "configuration changed while reading: " + str(path))
+        return raw
+
+
+def current_companion(root, kind):
+    """Common wins only when both copies have identical bytes, before parsing."""
+    name = "hardcaml-workbench-" + kind + ".sexp"
+    max_bytes = (16 if kind == "simulation" else 64) * 1024
+    found = {path: raw for path in (root / ".workbench" / name, root / name)
+             if (raw := read_current(path, max_bytes=max_bytes)) is not None}
+    require(found, "missing prepared main setup input: current config " + name)
+    require(len(set(found.values())) == 1,
+            "Conflicting configuration files (different bytes): " + " and ".join(map(str, found)))
+    return next(iter(found)), found
+
+
 def storage_path(runner, root, path, label):
     path = Path(path).resolve()
     nested_excluded = path.is_relative_to(root) and any(
@@ -46,13 +90,14 @@ def storage_path(runner, root, path, label):
     return path
 
 
-def derive(example_root, evidence_root, flow, profile, outer_build_lock=None):
+def derive(example_root, evidence_root, flow, profile, outer_build_lock=None, current_common=False):
     """Validate a prepared main installation and return config + input hashes."""
     runner = runner_module()
     root = Path(example_root).resolve(strict=True)
     require(root.is_dir(), "example root must be a directory")
     evidence = storage_path(runner, root, evidence_root, "evidence root")
     inputs = {}
+    current_configs = {}
 
     def read(path):
         path = Path(path)
@@ -92,6 +137,23 @@ def derive(example_root, evidence_root, flow, profile, outer_build_lock=None):
         return result
 
     preparation, asic = companion("preparation"), companion("asic")
+    if current_common:
+        # Main install is the only authority for generation selection. Never scan
+        # historical installs or reuse an earlier pyramid JSON. WB049's selected
+        # current configs must describe that exact prepared selection.
+        for kind in ("preparation", "asic", "simulation"):
+            installed = companion(kind)
+            path, found = current_companion(root, kind)
+            current_configs[kind] = str(path)
+            inputs.update({str(p): hashlib.sha256(raw).hexdigest() for p, raw in found.items()})
+            value = runner.parse(found[path].decode())
+            require(isinstance(value, list) and all(isinstance(p, list) and len(p) == 2 for p in value),
+                    "invalid common companion: " + kind)
+            require(len(dict(value)) == len(value) and dict(value) == installed,
+                    "current common config differs from prepared main install: " + kind + "; prepare main install again")
+        simulation = companion("simulation")
+        require(simulation["provider_args"][-2:] == ["--manifest", str(manifest_path)],
+                "common simulation selects a different manifest")
     target = str(runner.relative(preparation["build_target"]))
     project_executable = root / "_build/default" / target
     require(absolute(asic["project_executable"]) == project_executable,
@@ -153,7 +215,9 @@ def derive(example_root, evidence_root, flow, profile, outer_build_lock=None):
     runner.validate_config(config)
     require(all(runner.digest(path) == expected for path, expected in inputs.items()),
             "prepared main setup changed while deriving configuration; retry")
-    return config, dict(schema_version=1, example_root=str(root), inputs_sha256=inputs)
+    return config, dict(schema_version=1, example_root=str(root), inputs_sha256=inputs,
+                        current_configs=current_configs,
+                        prebuilt_apps={name: app["path"] for name, app in install["apps"].items()})
 
 
 def main():
@@ -192,7 +256,7 @@ def main():
             output.unlink()
             raise
     except (ValueError, OSError, KeyError, TypeError) as error:
-        parser.error(str(error))
+        parser.error(str(error) + "; " + setup_help(args.example_root))
     print("Config: " + str(output))
     print("Input identities: " + str(provenance))
 
