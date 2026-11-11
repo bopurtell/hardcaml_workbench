@@ -1,5 +1,6 @@
 # dune
 _build/
+_build_pt8_workbench/
 *.install
 
 # ocaml
@@ -30,3 +31,4 @@ release-group/*
 
 # python scratch
 __pycache__/
+
