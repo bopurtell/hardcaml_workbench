@@ -11,6 +11,32 @@ module Log_fetch = struct
 end
 
 (* Display only: never feed these strings back into evidence or numeric ordering. *)
+let failure_summary error =
+  let rec failure = function
+    | Sexp.List [ Atom ("Failure" | "Invalid_argument"); Atom message ] -> Some message
+    | List xs -> List.find_map xs ~f:failure
+    | Atom _ -> None
+  in
+  let prefix = "Final observation unavailable: " in
+  let context, payload =
+    if String.is_prefix error ~prefix
+    then prefix, String.drop_prefix error (String.length prefix)
+    else "", error
+  in
+  let message =
+    match Or_error.try_with (fun () -> Sexp.of_string payload) with
+    | Ok (Sexp.List _ as sexp) ->
+      Option.value (failure sexp) ~default:"Diagnostic details available in detail view"
+    | Ok (Atom _) -> payload
+    | Error _ -> payload
+  in
+  let message =
+    String.split_lines message |> List.map ~f:String.strip |> String.concat ~sep:" "
+  in
+  let summary = context ^ message in
+  if String.length summary > 240 then String.prefix summary 237 ^ "..." else summary
+;;
+
 let decimal ~places value =
   let places = Int.max 0 (Int.min 9 places) in
   if not (Float.is_finite value)

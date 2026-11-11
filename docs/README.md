@@ -27,7 +27,9 @@ Project/provider commands remain useful without the application.
 | [Layout focus-order plan](layout_focus_order_plan.md) | Implemented layout-defined Tab/Shift-Tab traversal, agent work packages and validation results |
 | [Provider integration](fs0_provider_integration.md) | Implemented public API, configuration, cache and supervision limits |
 | [Testing Workbench](testing.md) | Tool-test ownership, inline/subsystem/app integration layout, named suite selectors and current execution constraints |
-| [Stable development session](development_session.md) | One editable example/project and retained session with FIFO + PT.8 suites, normal ASIC preparation and time-aware waveforms |
+| [Real prefix pyramid tests](real_prefix_pyramid.md) | Opt-in fresh Elaboration→endpoint runs, separate aliases through Signoff, serial full pyramid and actual execution coverage |
+| [Everyday checkout-backed example](../../hardcaml_asic_example/docs/workbench_main.md) | Normal server/client opening the actual example checkout; persistent state, FIFO/PT.8 suites and normal endpoint selection |
+| [Captured development session](development_session.md) | Historical independent source-copy sessions and their acceptance evidence |
 | [PT.8 Workloads](pt8_workloads.md) | Isolated session launch, verified retained results/A-B comparison and fresh example workload through Testing |
 | [Terminal host](fs0_terminal.md) / [Execution module](fs0_execution_module.md) | Current UI controls and daemon-routed generic execution boundary |
 | [Architecture](hardcaml_workbench_architecture.md) | Runtime, ownership, data and integration boundaries |

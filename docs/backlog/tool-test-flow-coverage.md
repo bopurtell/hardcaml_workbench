@@ -2,6 +2,12 @@
 
 Status: **Backlog / deferred by owner** (2026-11-10).
 
+**Bounded reactivation, 2026-11-11:** the owner requested real independent prefix
+tests. [The pyramid runner](../real_prefix_pyramid.md) now implements endpoint
+selectors and an opt-in serial aggregate, with actual Elaboration/Synthesis passes.
+Later physical rungs and the full pyramid remain explicitly unrun. Broader test
+refactoring/coverage in this note stays deferred.
+
 Owner direction: cache the remaining test-refactor and expanded coverage work;
 prioritize completion of the main ASIC **PT.0–PT.8** feature track and its required
 acceptance. This note is not an active implementation queue or a new prerequisite

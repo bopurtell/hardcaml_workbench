@@ -955,12 +955,27 @@ let utility_rows ?(now = Time_ns.now ()) host data tile =
             (match selected_run with
              | Some run -> Overview_tiles.workflow_for_run ~asic:data.asic ~run
              | None -> Planned_run.workflow host.planned_run)
-          :: Overview_tiles.stage_rows ~selected_run ~asic:data.asic ~observation:None ()
+          :: (match selected_run, Planned_run.workflow host.planned_run with
+              | None, Some w -> Overview_tiles.workflow_endpoint_rows w
+              | _ -> Overview_tiles.stage_rows ~selected_run ~asic:data.asic ~observation:None ())
       in
       let facts =
         Option.bind selected_run ~f:data.summary
         |> Option.value_map ~default:[] ~f:(fun summary ->
           Overview_tiles.summary_rows ~freshness:policy.freshness summary)
+      in
+      let facts =
+        facts
+        @ Option.value_map
+            (Option.bind selected_run ~f:(fun run -> Overview_tiles.execution ~asic:data.asic ~run))
+            ~default:[]
+            ~f:(fun execution ->
+              Option.value_map execution.error ~default:[] ~f:(fun error ->
+                [ Overview_tiles.row
+                    ~role:Warning
+                    ~details:(String.split_lines error)
+                    "Observation"
+                    (Presentation.failure_summary error ^ " (details: d)") ]))
       in
       let interaction =
         if (not local.utility_detail) || not policy.hints
@@ -1018,7 +1033,11 @@ let utility_rows ?(now = Time_ns.now ()) host data tile =
             then
               Option.bind selected_run ~f:(stopped_observation data)
               |> Option.value_map ~default:[] ~f:(fun error ->
-                [ Overview_tiles.row ~role:Warning "Observation error" error ])
+                [ Overview_tiles.row
+                    ~role:Warning
+                    ~details:(String.split_lines error)
+                    "Observation error"
+                    (Presentation.failure_summary error) ])
             else [])
          @ (if H.compact_summary host tile && not local.utility_detail
             then Overview_tiles.checklist_rows ~compact:true ~stages ~aggregate:facts ()
@@ -1430,7 +1449,11 @@ let planned_source_rows host tile =
         (String.lowercase (Sexp.to_string (Planned_run.sexp_of_status model.status))
          ^ ": "
          ^ model.message)
-    ; row Fact ("Workflow: " ^ model.launch.message)
+    ; row
+        (if Planned_run.equal_launch_status model.launch.state Launch_failed
+         then Error
+         else Fact)
+        ("Workflow: " ^ model.launch.message)
     ]
     @ Option.value_map host.stage_preparation ~default:[] ~f:(fun reason ->
       [ row Warning reason ])
@@ -1473,8 +1496,8 @@ let planned_source_rows host tile =
       if detail
       then
         Overview_tiles.inspection_lines
-          [ Overview_tiles.elaboration_row ~now:(Time_ns.now ()) ~selected:false (Some w)
-          ]
+           [ Overview_tiles.elaboration_row ~now:(Time_ns.now ()) ~selected:false (Some w)
+           ]
         |> List.map ~f:(row Fact)
       else []))
   else if host.H.planned_preparation

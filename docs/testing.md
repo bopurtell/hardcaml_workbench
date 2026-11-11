@@ -1,5 +1,12 @@
 # Testing Workbench: ownership, suite selection and integration boundaries
 
+**Current addition:** [real fresh-prefix pyramid tests](real_prefix_pyramid.md)
+provide individually selectable real endpoints and one explicit serial aggregate.
+They never enter default/local test execution; only their controlled harness tests
+do. Elaboration and Synthesis have actually passed; later physical rungs remain
+unrun in this new runner. The earlier developer synthesis pause described below
+is historical; see [its completed acceptance](developer_workflow_refactored_closeout.md).
+
 2026-11-10. This guide is about **tests of the software tool**. Workbench's Testing
 workspace executes project-defined tests and hardware verification; see
 [Testing controls](testing_workspace.md) for that separate user workflow.

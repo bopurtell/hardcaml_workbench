@@ -17,7 +17,7 @@ starting with the [overall checkpoint](../docs/session_checkpoint.md).
 
 | Root alias | Existing owners selected | What it means |
 | --- | --- | --- |
-| `@test-contracts` | protocol, provider, project integration, adapters | Wire/config/argv contracts and controlled runner tests |
+| `@test-contracts` | protocol, provider, project integration, adapters, pyramid harness controls | Wire/config/argv contracts and controlled runner tests; no real EDA |
 | `@test-presentation` | terminal, workspaces and terminal-local tests | Production parsing/state/rendering/input plus focused persistence/handoff integration |
 | `@test-backend` | backend/test recursively | Service/process/cache/storage and controlled-provider integration |
 | `@test-setup` | setup/test | Initialization/config/CLI/filesystem integration |
@@ -56,6 +56,29 @@ flock /tmp/opencode/workbench-pt8-build.lock \
   --build-dir _build_pt8_workbench --sandbox=copy --force @test-support @test-native-smoke
 ```
 
+## Opt-in real fresh-prefix tests
+
+Each endpoint alias runs one independent fresh build/emission and its entire selected
+physical prefix. **None is selected by `@runtest`, `@test-local`, or `@all`.**
+
+| Alias | Selection |
+| --- | --- |
+| `@test-real-elaboration` | Build/emission only |
+| `@test-real-synthesis` | Fresh through synthesis |
+| `@test-real-floorplan` | Fresh through floorplan |
+| `@test-real-placement` | Fresh through placement |
+| `@test-real-cts` | Fresh through CTS |
+| `@test-real-routing` | Fresh through routing |
+| `@test-real-timing` | Fresh through timing |
+| `@test-real-signoff` | Fresh through signoff; potentially long-running |
+| `@test-real-pyramid` | All eight fresh runs, serially; explicit large-change qualification |
+
+An explicit `HARDCAML_WORKBENCH_REAL_TEST_CONFIG` is required. All selected real
+aliases rerun, rather than returning a cached EDA success. The runner's inexpensive
+controls alone join ordinary tests. See [configuration, commands and actual
+verification](../docs/real_prefix_pyramid.md). Real Elaboration and Synthesis passed;
+the later endpoint selectors/full pyramid are implemented but not yet executed here.
+
 ## Data stays data
 
 `test/dune` marks these children data-only:
@@ -69,5 +92,6 @@ No existing fixtures, baselines, test sources or evidence were moved in this pas
 
 `test/support/` now contains shared screen reconstruction and the PTY driver,
 with controlled regression tests. Historical script exports remain compatible.
-Future app-wide integration drivers can live under `test/integration/`; that
-migration remains pending. The waveform smoke stays with its terminal owner.
+`test/integration/pyramid/` now hosts explicit real-flow integration and its cheap
+runner controls. Broader existing-driver migration remains pending. The waveform
+smoke stays with its terminal owner.

@@ -1,5 +1,11 @@
 # Refactored-example developer workflow — acceptance closeout
 
+Subsequent interactive follow-up: [unsupported endpoint rejection and checklist
+recovery](developer_workflow_endpoint_rejection.md). The owner's placement attempt
+in this synthesis-only session revealed a late-rejection/observation presentation
+defect. Corrected app binaries are built and reviewed, but require explicit adoption;
+the accepted hashes below remain the original acceptance identities.
+
 2026-11-10. **Bounded developer acceptance complete**, independently reviewed.
 This supersedes the paused synthesis status in the earlier session handoffs.
 It closes the example/Workbench workflow, not PT.3 Protemu adoption, physical

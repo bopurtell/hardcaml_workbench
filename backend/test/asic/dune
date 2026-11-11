@@ -37,3 +37,10 @@
  (libraries core hardcaml_workbench_backend yojson)
  (preprocess (pps ppx_jane))
  (lint (pps ppx_js_style)))
+
+(test
+ (name test_rejection)
+ (modules test_rejection)
+ (libraries core hardcaml_workbench_backend hardcaml_workbench_protocol)
+ (preprocess (pps ppx_jane))
+ (lint (pps ppx_js_style)))

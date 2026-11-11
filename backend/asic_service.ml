@@ -7,6 +7,8 @@ module Config = Hardcaml_workbench_project_integration.Asic_config
 module Adapter = Hardcaml_workbench_adapters.Asic_adapter
 module Public = Asic_public
 
+let failure_message exn = Exn.to_string (Monitor.extract_exn exn)
+
 module Finalization_stored = struct
   type t =
     { value : Asic.Finalization.t
@@ -596,11 +598,41 @@ let query ?(max_bytes = 16 * 1024 * 1024) ?(before = fun () -> ()) t _p cancel i
     Public.decode output)
 ;;
 
-let check_provider ?(cache = true) t p cancel =
+(* A catalog describes the provider's general routes, not what its active execution
+   policy permits. Admit using metadata from the actual producer environment. Never
+   infer activation from synthesis_collection1, which is also advertised by default. *)
+let validate_execution_selection metadata (selection : Asic.Selection.t) =
+  match Public.field "execution_envelope" metadata with
+  | `Null -> ()
+  | envelope ->
+    Public.require
+      (List.for_all
+         [ "schema_version", `Int 1
+         ; "profile", `String "synthesis-total-tasks-v1"
+         ; "total_container_tasks", `Int 6
+         ; "configured_executor_max_workers", `Int 6
+         ; "reduced_usable_executor_concurrency", `Bool true
+         ]
+         ~f:(fun (key, expected) -> Poly.equal (Public.field key envelope) expected))
+      "Provider advertises an unsupported active execution_envelope; execution blocked";
+    Public.require
+      (String.equal selection.endpoint "synthesis")
+      (sprintf
+         "Endpoint '%s' is incompatible with active provider execution_envelope \
+          'synthesis-total-tasks-v1' (6 total container tasks): only fresh synthesis-only \
+          execution is supported. Select endpoint 'synthesis' or use elaboration-only."
+         selection.endpoint)
+;;
+
+let check_provider ?(cache = true) ?selection t p cancel =
+  (* Admission must not reuse a discovery probe: the active opt-in can change while
+     the service remains open. Recheck before preparation and before allocation. *)
+  let cache = cache && Option.is_none selection in
   let probe () =
     Monitor.try_with (fun () ->
       let%map metadata = query t p cancel (invoke p Adapter.metadata) in
       Public.metadata metadata;
+      Option.iter selection ~f:(validate_execution_selection metadata);
       p.timing_stage
       <- Poly.equal
            (Public.field
@@ -773,15 +805,29 @@ let observe_unlocked t p cancel (run : Run_ref.t) =
     "ASIC observation stopped; reconnect with Observe";
   let%bind () = check_provider t p cancel in
   let r = find_run p run in
+  (* Replay the small prefix until execution delivery. A failed admission may have
+     been preceded by an earlier pending observation; a suffix is not proof that
+     no Prepared/Started event occurred. The provider validates the journal. *)
+  let read_from = if Option.is_none r.execution_file then { r with cursor = 0 } else r in
   let%bind updates =
     query
       t
       p
       cancel
       (invoke p (fun c ~root ~environment ->
-         Adapter.updates c ~root ~environment r.reference ~after:r.cursor))
+          Adapter.updates c ~root ~environment r.reference ~after:read_from.cursor))
   in
-  let cursor = Public.updates r updates in
+  let cursor = Public.updates read_from updates in
+  Public.require (cursor >= r.cursor) "Regressed replayed observation cursor";
+  match Asic_rejection.from_updates read_from ~expected_plan:(expected_plan p run) updates with
+  | Some rejected ->
+    Public.require
+      (not (Deferred.is_determined cancel))
+      "ASIC observation stopped; reconnect with Observe";
+    replace_run p rejected;
+    let%map () = persist t p in
+    true
+  | None -> (
   let%bind inspection =
     query
       t
@@ -880,7 +926,7 @@ let observe_unlocked t p cancel (run : Run_ref.t) =
                else Cached_unverified)
           }));
   let%map () = persist t p in
-  final
+  final)
 ;;
 
 let observe t p cancel (run : Run_ref.t) =
@@ -909,6 +955,7 @@ let materialize_unlocked ?attempt t p cancel (run : Run_ref.t) =
   let%bind () = check_provider t p cancel in
   let r = find_run p run in
   match r.execution_file with
+  | None when Asic_rejection.is_rejection r -> Deferred.unit
   | None ->
     Option.iter (Hashtbl.find p.hot run.id) ~f:(fun s ->
       hot p { s with freshness = Missing_source });
@@ -1234,7 +1281,7 @@ let schedule t p ~key ~kind ~execution f =
       <- (match result with
           | Ok () -> { task.pending with state = "completed" }
           | Error exn ->
-            { task.pending with state = "failed"; error = Some (Exn.to_string exn) });
+            { task.pending with state = "failed"; error = Some (failure_message exn) });
       if String.equal kind "finalize"
       then (
         p.finalizations
@@ -2912,7 +2959,7 @@ let rec handle_operation ?prepared_input t p operation =
          ^ Public.digest (Sexp.to_string_mach (Asic.Selection.sexp_of_t selection)))
       ~kind:"plan"
       (fun cancel ->
-        let%bind () = check_provider t p cancel in
+        let%bind () = check_provider ~selection t p cancel in
         let%bind () =
           if not (String.equal selection.endpoint "timing")
           then Deferred.unit
@@ -3079,7 +3126,7 @@ let rec handle_operation ?prepared_input t p operation =
            one deadline. Allocation must not reset the execution budget. *)
         let deadline = Clock.after (Time_float.Span.of_sec 1800.) in
         let cancel = Deferred.any [ Ivar.read task.cancel; deadline ] in
-        let%bind () = check_provider t p cancel in
+        let%bind () = check_provider ~selection:preview.selection t p cancel in
         Public.require
           (p.timing_stage || not (String.equal preview.selection.endpoint "timing"))
           "Provider does not advertise executable Timing";
@@ -3288,7 +3335,14 @@ let rec handle_operation ?prepared_input t p operation =
                  o.pending <- { o.pending with state = "completed"; error = None })
              | Error exn ->
                let current = find_run p run in
-               let error = "Final observation unavailable: " ^ Exn.to_string exn in
+               let observation_error =
+                 "Final observation unavailable: " ^ failure_message exn
+               in
+               let error =
+                 match result with
+                 | Ok _ -> observation_error
+                 | Error producer -> failure_message producer ^ "; " ^ observation_error
+               in
                (* Preserve already-recorded terminal stages; never infer failure or
                   cancellation from the owned process's exit status. *)
                replace_run
@@ -3482,6 +3536,7 @@ and execute_fresh t p id task =
              and shutdown must terminate/reap it before orchestration joins. *)
           check_provider
             ~cache:false
+            ~selection:w.intent.selection
             t
             p
             (Deferred.any
@@ -3638,7 +3693,7 @@ and execute_fresh t p id task =
     ; error =
         (match result with
          | Ok () -> w.error
-         | Error exn -> Some (Exn.to_string exn))
+         | Error exn -> Some (failure_message exn))
     ; finished_at = Some (Timestamp.of_time_ns (Time_ns.now ()))
     });
   (* Failure to retain a terminal update is exposed by cache_error; it must never cause a

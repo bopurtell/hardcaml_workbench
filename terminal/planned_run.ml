@@ -547,7 +547,8 @@ let model t =
             ^ w.id
             ^ "; "
             ^ Sexp.to_string (Asic.Fresh.Phase.sexp_of_t w.phase)
-            ^ Option.value_map w.error ~default:"" ~f:(fun e -> ": " ^ e)
+            ^ Option.value_map w.error ~default:"" ~f:(fun e ->
+              ": " ^ Presentation.failure_summary e ^ " (details: d)")
         }
       | None ->
         (match t.launch_intent with

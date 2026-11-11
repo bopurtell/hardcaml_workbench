@@ -5,6 +5,32 @@ It summarizes the ASIC PT.0–PT.8 track, acceptance and preservation rules
 without replacing this queue or the ASIC queue. Refactor continuation plans are
 grouped under [migration guides](migration_guides/README.md).
 
+## Real fresh-prefix pyramid tests — 2026-11-11
+
+Owner activated this bounded coverage item from the broader deferred test backlog.
+[Runner/selection guide](real_prefix_pyramid.md) records eight explicit real endpoint
+aliases and one serial pyramid. Default runtest/local/all excludes every real action;
+only controlled harness tests are registered there. Persistent private evidence and
+independent source state preserve the owner's main session.
+
+- [x] Implement fresh independent rungs, exact-prefix/result checks and cleanup.
+- [x] Register per-endpoint aliases and an explicit serial full-pyramid action.
+- [x] Verify controls/default exclusion and actual real Elaboration/Synthesis.
+- [ ] Execute the remaining physical endpoint rungs when explicitly selected.
+- [ ] Execute the complete pyramid for a scheduled large-change qualification.
+
+28 controls plus15 self-tests pass. Independent review substantiates the final real
+Synthesis PASS. Floorplan through Signoff/full-pyramid execution is not claimed.
+
+## Interactive endpoint rejection recovery — 2026-11-10
+
+Owner's placement request in the synthesis-only accepted session exposed late
+admission and a secondary observation error. [Fix and adoption handoff](developer_workflow_endpoint_rejection.md)
+records early capability admission, definitive pre-execution rejection recovery,
+retained checklist context and readable diagnostics. Independent backend/terminal
+tests and actual retained-journal rendering pass. The live session remains on its
+old captured apps until explicit stopped-daemon adoption; no physical run was made.
+
 ## Tool-test refactor continuation — 2026-11-10
 
 **Owner priority update:** further general test refactoring and expanded flow

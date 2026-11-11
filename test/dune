@@ -10,7 +10,8 @@
   (alias_rec ../protocol/runtest)
   (alias_rec ../provider/runtest)
   (alias_rec ../project_integration/runtest)
-  (alias_rec ../adapters/runtest)))
+  (alias_rec ../adapters/runtest)
+  (alias integration/pyramid/runtest)))
 
 (alias
  (name backend)
@@ -40,3 +41,40 @@
   (alias presentation)
    (alias setup)
    (alias support)))
+
+; Real-tool actions are opt-in leaves, never dependencies of local/runtest.
+(alias
+ (name real-elaboration)
+ (deps (alias integration/pyramid/real-elaboration)))
+
+(alias
+ (name real-synthesis)
+ (deps (alias integration/pyramid/real-synthesis)))
+
+(alias
+ (name real-floorplan)
+ (deps (alias integration/pyramid/real-floorplan)))
+
+(alias
+ (name real-placement)
+ (deps (alias integration/pyramid/real-placement)))
+
+(alias
+ (name real-cts)
+ (deps (alias integration/pyramid/real-cts)))
+
+(alias
+ (name real-routing)
+ (deps (alias integration/pyramid/real-routing)))
+
+(alias
+ (name real-timing)
+ (deps (alias integration/pyramid/real-timing)))
+
+(alias
+ (name real-signoff)
+ (deps (alias integration/pyramid/real-signoff)))
+
+(alias
+ (name real-pyramid)
+ (deps (alias integration/pyramid/real-pyramid)))

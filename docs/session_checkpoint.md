@@ -1,5 +1,13 @@
 # Session recovery checkpoint — ASIC PT.0–PT.8 and Workbench
 
+**Everyday launch update, 2026-11-11:** use the example's
+[checkout-backed main launcher](../../hardcaml_asic_example/docs/workbench_main.md).
+Its `daemon`/`client` commands open the actual repository and persistent local state,
+without the acceptance session's synthesis-only envelope or `/tmp` dependency.
+Root companion configuration is prepared/published with backups; actual startup
+and discovery passed, with no physical flow launched. The earlier store04 commands
+below open an independent copied acceptance project, not the owner's checkout.
+
 **Latest update, 2026-11-10:** refactored-example developer workflow acceptance is
 [complete in its bounded scope](developer_workflow_refactored_closeout.md): actual
 TUI synthesis/collection, report/check inspection and same-store restart passed with
