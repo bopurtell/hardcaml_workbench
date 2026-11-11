@@ -3,7 +3,7 @@ id: WB-049
 title: Configuration-location migration and precedence
 category: project
 feature_sets: [FS3]
-status: needs-design
+status: closed
 kind: enhancement
 priority: P2
 severity: n/a
@@ -25,10 +25,10 @@ Original size: **Unspecified**. Move shareable project configuration toward a
 dedicated location with explicit migration and unambiguous precedence.
 
 ## Current baseline
-FS3 deliberately preserves root hardcaml-workbench.sexp and current lookup semantics.
-ASIC and simulation each have separate configuration loaders and identities.
-Personal presentation state already lives separately under XDG state.
-The area spec suggests .workbench/ as a candidate, not an accepted directory name.
+Delivered 2026-11-11: `.workbench/` holds the four unchanged generic, ASIC,
+simulation and preparation basenames. Legacy root lookup remains supported.
+All loaders share explicit byte-conflict resolution; personal state remains separate.
+See the [migration and verification guide](../../migration_guides/project-configuration.md).
 
 ## Scope
 - Select one project configuration directory and enumerate migrated file classes.
@@ -56,9 +56,11 @@ Related: none; upward discovery can use today's root filenames independently.
 Exclude root-discovery changes, template redesign and automatic run-registry migration.
 
 ## Assumptions and decisions needed
-TBD: directory name, exact file set and compatibility duration.
-Default: diagnose ambiguous coexistence rather than silently override differing files.
-Relative paths must preserve their intended project-root meaning after relocation.
+Selected `.workbench/`, retaining four independent schemas and basenames. Legacy
+compatibility has no scheduled removal. Equal dual files select the common location;
+differing bytes fail. Explicit migration copies without deleting originals or
+clobbering targets. Relative paths retain project-root meaning. New generic and
+simulation initialization uses the common directory.
 
 ## References
 - [Setup policy](../project_setup.md)

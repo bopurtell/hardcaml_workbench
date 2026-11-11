@@ -1,6 +1,7 @@
 open! Core
 open Hardcaml_workbench_protocol
 module Config = Hardcaml_workbench_project_integration.Simulation_config
+module Location = Hardcaml_workbench_project_integration.Config_location
 module Codec = Hardcaml_workbench_project_integration.Simulation_protocol
 module Adapter = Hardcaml_workbench_adapters.Simulation_adapter
 module Limits = Simulation.Limits
@@ -67,7 +68,7 @@ let prepare
   let%bind.Result root = Project_discovery.explicit_root root in
   filesystem_result
   @@ fun () ->
-  let path = Filename.concat root Config.filename in
+  let path = Location.preferred_path ~root ~filename:Config.filename in
   if not (Filename.is_absolute provider_executable)
   then
     Error
@@ -75,9 +76,10 @@ let prepare
          "provider executable must be an absolute path, got %S; Workbench does not \
           search PATH or resolve relative provider paths"
          provider_executable)
-  else if No_clobber.exists path
-  then Error (No_clobber.existing_error path)
   else (
+    let%bind.Result () =
+      Config_migration.require_absent ~root ~filename:Config.filename
+    in
     let config : Config.t =
       { schema_version = 1
       ; provider_executable
@@ -135,8 +137,12 @@ let preview t =
 ;;
 
 let publish t =
+  let%bind.Result () =
+    Config_migration.require_absent ~root:t.root ~filename:Config.filename
+  in
+  let%bind.Result directory = Config_migration.ensure_common_directory ~root:t.root in
   No_clobber.publish
-    ~directory:t.root
+    ~directory
     ~path:t.path
     ~temporary_prefix:".hardcaml-workbench-simulation-"
     ~contents:t.contents
@@ -268,24 +274,17 @@ module Outcome = struct
   ;;
 end
 
-let read_config path =
-  match Core_unix.lstat path with
-  | exception Core_unix.Unix_error (ENOENT, _, _) -> `Absent
-  | exception Core_unix.Unix_error (error, _, _) ->
-    `Invalid ("cannot inspect: " ^ Core_unix.Error.message error)
-  | { st_kind = S_LNK; _ } ->
-    `Invalid "it is a symlink, which the daemon refuses for simulation configuration"
-  | { st_kind = S_REG; st_size; _ } ->
-    if Int64.(st_size > of_int Limits.config_bytes)
-    then `Invalid (sprintf "it exceeds %d bytes" Limits.config_bytes)
-    else (
-      match Or_error.try_with (fun () -> In_channel.read_all path) with
-      | Error error -> `Invalid (Error.to_string_hum error)
-      | Ok text ->
-        (match Config.parse_string text with
-         | Ok config -> `Config config
-         | Error error -> `Invalid (Error.to_string_hum error)))
-  | _ -> `Invalid "it is not a regular file"
+let read_config ~root =
+  let path = Location.preferred_path ~root ~filename:Config.filename in
+  match
+    Location.resolve ~root ~filename:Config.filename ~max_bytes:Limits.config_bytes
+  with
+  | Error error -> `Invalid (path, Error.to_string_hum error)
+  | Ok None -> `Absent path
+  | Ok (Some resolved) ->
+    (match Config.parse_string resolved.contents with
+     | Ok config -> `Config config
+     | Error error -> `Invalid (resolved.path, Error.to_string_hum error))
 ;;
 
 let append_bounded buffer bytes ~length ~limit =
@@ -404,10 +403,9 @@ let run_discovery
 ;;
 
 let check ~root ~environment : Outcome.t =
-  let path = Filename.concat root Config.filename in
-  match read_config path with
-  | `Absent -> Not_configured { path }
-  | `Invalid error -> Invalid_configuration { path; error }
+  match read_config ~root with
+  | `Absent path -> Not_configured { path }
+  | `Invalid (path, error) -> Invalid_configuration { path; error }
   | `Config config ->
     let invocation = Adapter.discover config ~root ~environment in
     let stdout, stderr, failure =

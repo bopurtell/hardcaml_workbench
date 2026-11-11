@@ -12,7 +12,8 @@ The [catalog](README.md) separates additional work from the delivered initialize
 Status: bounded existing-project initializer delivered; current root manifest remains
 supported. See [FS3 adoption](../fs3_adoption.md) for the initializer, portable
 starter templates and persistent presentation preferences. Configuration-directory
-migration, upward discovery and new-project creation remain requested.
+migration is delivered in [WB-049](../migration_guides/project-configuration.md);
+upward discovery and new-project creation remain requested.
 The initializer requires a direct `dune-project`, matching the opener. An already
 open project adopts its manifest through explicit refresh; a driverless reload
 succeeds without scheduling a job. Installed initializer/client handoff is covered
@@ -24,8 +25,8 @@ by the 2026-10-17 integration evidence.
   project without taking ownership of its build or version-control system.
 - Support explicit roots and convenient upward configuration discovery; generic
   Dune fallback remains useful without hardware hooks.
-- Keep project-local shareable configuration in a dedicated directory (candidate
-  `.workbench/`; final naming/migration is not yet decided).
+- Keep project-local integration configuration in `.workbench/`, with explicit
+  no-clobber migration and continued root-file compatibility.
 - Separate committed integration/layout templates from personal selections,
   machine-specific paths, transient session state and rebuildable caches.
 - Preserve/migrate existing `hardcaml-workbench.sexp` deliberately; do not silently

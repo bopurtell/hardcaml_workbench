@@ -14,6 +14,7 @@ import unittest
 
 BINARY = str(Path(sys.argv.pop(1)).resolve())
 CONFIG = "hardcaml-workbench-simulation.sexp"
+COMMON_CONFIG = Path(".workbench") / CONFIG
 CATALOG = ("((protocol_version 1)(suites(((id fifo)(label FIFO)(cases(((id directed)"
            "(label Directed))((id random)(label Random))))(parameters())(default_seed 7)))))")
 
@@ -55,7 +56,7 @@ class SimulationSetupTests(unittest.TestCase):
                              "--provider-arg", "--counter", "--provider-arg", "/x y/c.exe",
                              "--run-timeout-seconds", "90", "--dry-run")
         out = result.stdout
-        self.assertIn(f"Destination:               {self.root / CONFIG}", out)
+        self.assertIn(f"Destination:               {self.root / COMMON_CONFIG}", out)
         self.assertIn("(provider_args (--counter \"/x y/c.exe\"))", out)
         self.assertIn("(run_timeout_seconds 90)", out)
         self.assertIn("Dry run: nothing was written", out)
@@ -67,11 +68,11 @@ class SimulationSetupTests(unittest.TestCase):
         created = self.invoke("init", "--discover-project", "--provider-executable", provider,
                               cwd=self.root / "src" / "rtl")
         self.assertIn(f"discovered project root {self.root} ", created.stderr)
-        self.assertIn(f"Created {self.root / CONFIG}", created.stdout)
+        self.assertIn(f"Created {self.root / COMMON_CONFIG}", created.stdout)
         self.assertIn("No provider or test was run.", created.stdout)
         self.assertEqual(self.recorded(), [])
         preview = created.stdout.split("Rendered configuration:\n", 1)[1]
-        self.assertTrue(preview.startswith((self.root / CONFIG).read_text()))
+        self.assertTrue(preview.startswith((self.root / COMMON_CONFIG).read_text()))
         checked = self.invoke("check", "--discover-project", cwd=self.root / "src")
         self.assertIn("Discovery succeeded: 1 suite, 2 cases.", checked.stdout)
         self.assertIn("case directed - Directed", checked.stdout)
@@ -107,7 +108,7 @@ class SimulationSetupTests(unittest.TestCase):
         ]
         for body, ok, fragment in cases:
             with self.subTest(body=body):
-                (self.root / CONFIG).unlink(missing_ok=True)
+                (self.root / COMMON_CONFIG).unlink(missing_ok=True)
                 self.invoke("init", "--root", self.root, "--provider-executable",
                             self.provider(body))
                 result = self.invoke("check", "--root", self.root, success=ok)
@@ -129,6 +130,37 @@ class SimulationSetupTests(unittest.TestCase):
             with self.subTest(args=args):
                 self.invoke(*args, success=False)
         self.assertEqual(self.listing(), ["dune-project", "src"])
+        self.assertEqual(self.recorded(), [])
+
+    def test_legacy_and_equal_dual_locations_preserve_provider_and_root(self):
+        provider = self.provider(f'test "$PWD" = "{self.root}" || exit 3\necho \'{CATALOG}\'')
+        self.invoke("init", "--root", self.root, "--provider-executable", provider,
+                    "--provider-arg", "identity argument")
+        common = self.root / COMMON_CONFIG
+        legacy = self.root / CONFIG
+        contents = common.read_bytes()
+        legacy.write_bytes(contents)
+        self.invoke("check", "--root", self.root)
+        common.unlink()
+        self.invoke("check", "--root", self.root)
+        common.write_bytes(contents)
+        self.invoke("check", "--root", self.root)
+        self.assertEqual(self.recorded(), ["identity argument discover --protocol-version 1"] * 3)
+        self.assertEqual(legacy.read_bytes(), contents)
+        common.write_bytes(contents + b"\n")
+        result = self.invoke("check", "--root", self.root, success=False)
+        self.assertIn("Conflicting configuration", result.stdout)
+        self.assertEqual(len(self.recorded()), 3)
+        self.invoke("init", "--root", self.root, "--provider-executable", provider, success=False)
+        self.assertEqual(legacy.read_bytes(), contents)
+        self.assertEqual(common.read_bytes(), contents + b"\n")
+
+    def test_common_directory_symlink_rejected_without_provider_execution(self):
+        provider = self.provider("exit 0")
+        (self.root / ".workbench").symlink_to(self.base, target_is_directory=True)
+        self.invoke("init", "--root", self.root, "--provider-executable", provider, success=False)
+        result = self.invoke("check", "--root", self.root, success=False)
+        self.assertIn("symlink", result.stdout)
         self.assertEqual(self.recorded(), [])
 
     def test_help_explains_provider_prerequisites(self):

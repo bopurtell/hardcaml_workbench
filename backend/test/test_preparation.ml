@@ -372,6 +372,63 @@ let with_service ?(selected = selection) f =
       return ())
 ;;
 
+let config_location_fixture () =
+  let root = Filename_unix.temp_dir "wb049-preparation-" "" in
+  let module Loader = Hardcaml_workbench_backend.Preparation_service in
+  let config : Config.t =
+    { schema_version = 1
+    ; build_target = "bin/project.exe"
+    ; results_root = Filename.concat root "results"
+    ; timeout_seconds = 10
+    }
+  in
+  let old = Filename.concat root Config.filename in
+  let common = Filename.concat (Filename.concat root ".workbench") Config.filename in
+  let bytes = Sexp.to_string_mach (Config.sexp_of_t config) in
+  let check expected =
+    let%map availability, loaded = Loader.load_config root in
+    if expected
+    then (
+      require (Option.equal Config.equal loaded (Some config)) "Preparation config changed";
+      require
+        (String.equal
+           (Config.source_executable (Option.value_exn loaded) ~root)
+           (Filename.concat root "_build/default/bin/project.exe"))
+        "Common config changed source-root target semantics")
+    else (
+      require (Option.is_none loaded) "Invalid preparation config was accepted";
+      require
+        (match availability with
+         | Preparation.Availability.Unavailable (Invalid_configuration _) -> true
+         | _ -> false)
+        "Invalid preparation config was silently absent")
+  in
+  Monitor.protect
+    ~finally:(fun () -> In_thread.run (fun () -> Service.remove_tree_sync root))
+    (fun () ->
+      Out_channel.write_all old ~data:bytes;
+      let%bind () = check true in
+      Core_unix.mkdir (Filename.dirname common);
+      Out_channel.write_all common ~data:bytes;
+      let%bind () = check true in
+      Core_unix.unlink old;
+      let%bind () = check true in
+      Out_channel.write_all
+        common
+        ~data:
+          (bytes
+           ^ String.make
+               Hardcaml_workbench_project_integration.Config_location.max_config_bytes
+               ' ');
+      let%bind () = check false in
+      Out_channel.write_all common ~data:"invalid";
+      let%bind () = check false in
+      Out_channel.write_all old ~data:bytes;
+      let%bind () = check false in
+      Out_channel.write_all common ~data:(bytes ^ "\n");
+      check false)
+;;
+
 let run_fixture () =
   with_service
     (fun
@@ -1802,7 +1859,8 @@ let () =
             (optional string)
             ~doc:"PATH also validate an existing real provider receipt read-only"
         in
-        fun () ->
+         fun () ->
+          let%bind () = config_location_fixture () in
           let%bind () = run_staging_fixture () in
           let%bind () = run_fixture () in
           let%bind () = run_fresh_persistence_fixture () in

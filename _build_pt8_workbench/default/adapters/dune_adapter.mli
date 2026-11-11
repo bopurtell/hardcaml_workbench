@@ -36,9 +36,13 @@ val inspect_invocation : root:string -> V1.Environment_selection.t -> Invocation
 
 val parse_workspace : string -> (V1.Dune_workspace.Inspection.t, string) Result.t
 
-(** Translate a typed generic action without a shell. *)
+(** Translate a typed generic action without a shell. [jobs] is the positive
+    per-invocation Dune job limit (default 20). It is not a global limit across
+    invocations, nor a bound on subprocesses launched by a Dune action.
+    Raises [Invalid_argument] for a nonpositive limit. *)
 val action_invocation
-  :  ?build_alias:string
+  :  ?jobs:int
+  -> ?build_alias:string
   -> ?test_alias:string
   -> root:string
   -> environment:V1.Environment_selection.t

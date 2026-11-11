@@ -5,6 +5,8 @@ This script never invokes Dune, git, a driver, or a provider.
 
 import concurrent.futures
 import os
+import resource
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +16,9 @@ import unittest
 
 BINARY = str(Path(sys.argv.pop(1)).resolve())
 MANIFEST = "hardcaml-workbench.sexp"
+COMMON_MANIFEST = Path(".workbench") / MANIFEST
+CONFIGS = [MANIFEST, "hardcaml-workbench-asic.sexp",
+           "hardcaml-workbench-simulation.sexp", "hardcaml-workbench-preparation.sexp"]
 
 
 class InitializationTests(unittest.TestCase):
@@ -38,7 +43,8 @@ class InitializationTests(unittest.TestCase):
         return result
 
     def snapshot(self):
-        return {p.name: p.read_bytes() for p in self.root.iterdir() if p.is_file()}
+        return {str(p.relative_to(self.root)): p.read_bytes()
+                for p in self.root.rglob("*") if p.is_file()}
 
     def test_defaults_dry_run_and_preservation(self):
         before = self.snapshot()
@@ -50,9 +56,9 @@ class InitializationTests(unittest.TestCase):
         self.assertIn("(test_alias @runtest)", preview.stdout)
         self.assertNotIn("(driver", preview.stdout)
         self.invoke("--root", self.root)
-        self.assertEqual((self.root / MANIFEST).read_text(), preview.stdout)
-        self.assertEqual(self.snapshot(), {**before, MANIFEST: preview.stdout.encode()})
-        self.assertEqual(set(p.name for p in self.root.iterdir()), set(self.snapshot()))
+        self.assertEqual((self.root / COMMON_MANIFEST).read_text(), preview.stdout)
+        self.assertEqual(self.snapshot(), {**before, str(COMMON_MANIFEST): preview.stdout.encode()})
+        self.assertEqual(set(p.name for p in self.root.iterdir()), {*before, ".workbench"})
 
     def test_explicit_options_and_relative_root(self):
         result = self.invoke(
@@ -100,7 +106,7 @@ class InitializationTests(unittest.TestCase):
         self.invoke("--root", child, success=False)
         (child / "dune-project").write_text("(lang dune 3.22)\n")
         self.invoke("--root", child)
-        self.assertTrue((child / MANIFEST).is_file())
+        self.assertTrue((child / COMMON_MANIFEST).is_file())
         self.assertFalse((self.root / MANIFEST).exists())
 
     def test_existing_configs_are_preserved_including_invalid(self):
@@ -113,6 +119,7 @@ class InitializationTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), contents)
         target.unlink()
         self.invoke("--root", self.root)
+        target = self.root / COMMON_MANIFEST
         contents = target.read_bytes()
         self.invoke("--root", self.root, success=False)
         self.assertEqual(target.read_bytes(), contents)
@@ -142,8 +149,8 @@ class InitializationTests(unittest.TestCase):
         self.assertIn(f"discovered project root {self.root.resolve()} ", preview.stderr)
         self.assertEqual(self.snapshot(), before)
         created = self.invoke("--discover-project", cwd=deep)
-        self.assertIn(str(self.root.resolve() / MANIFEST), created.stdout)
-        self.assertEqual((self.root / MANIFEST).read_text(), preview.stdout)
+        self.assertIn(str(self.root.resolve() / COMMON_MANIFEST), created.stdout)
+        self.assertEqual((self.root / COMMON_MANIFEST).read_text(), preview.stdout)
         self.assertFalse((deep / MANIFEST).exists())
 
     def test_discover_project_conflicts_and_no_marker(self):
@@ -180,13 +187,146 @@ class InitializationTests(unittest.TestCase):
             results = list(executor.map(run, range(12)))
         winners = [i for i, result in enumerate(results) if result.returncode == 0]
         self.assertEqual(len(winners), 1, [(r.returncode, r.stderr) for r in results])
-        actual = (self.root / MANIFEST).read_text()
+        actual = (self.root / COMMON_MANIFEST).read_text()
         self.assertIn(f"(name project-{winners[0]})", actual)
         for result in results:
             if result.returncode != 0:
                 self.assertIn("refusing to overwrite", result.stderr)
-        self.assertEqual(self.snapshot(), {**before, MANIFEST: actual.encode()})
-        self.assertEqual(set(p.name for p in self.root.iterdir()), set(self.snapshot()))
+        self.assertEqual(self.snapshot(), {**before, str(COMMON_MANIFEST): actual.encode()})
+        self.assertEqual(set(p.name for p in self.root.iterdir()), {*before, ".workbench"})
+
+    def seed_configs(self):
+        # Copy bytes, including future/invalid schemas, without changing provider identity.
+        for index, name in enumerate(CONFIGS):
+            (self.root / name).write_bytes(f"provider-{index} ./root-relative\n".encode() + b"\x00")
+
+    def migrate(self, *args, **kwargs):
+        return self.invoke("--root", self.root, "--migrate-configs", *args, **kwargs)
+
+    def test_migration_dry_run_copies_all_four_and_repeat(self):
+        self.seed_configs()
+        before = self.snapshot()
+        preview = self.migrate("--dry-run")
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / ".workbench").exists())
+        self.assertIn("Create directory", preview.stdout)
+        self.assertEqual(preview.stdout.count("Copy "), 4)
+        for name in CONFIGS:
+            self.assertIn(f"{self.root / name} -> {self.root / '.workbench' / name}", preview.stdout)
+        self.migrate()
+        after = self.snapshot()
+        for name in CONFIGS:
+            self.assertEqual(after[name], before[name])
+            self.assertEqual(after[str(Path('.workbench') / name)], before[name])
+        self.assertIn("No configuration copies needed", self.migrate().stdout)
+        self.assertIn("No configuration copies needed", self.migrate("--dry-run").stdout)
+        self.assertEqual(self.snapshot(), after)
+
+    def test_migration_preflights_entire_set_and_accepts_equal_targets(self):
+        self.seed_configs()
+        common = self.root / ".workbench"
+        common.mkdir()
+        last = common / CONFIGS[-1]
+        last.write_bytes(b"conflicting bytes")
+        before = self.snapshot()
+        for args in [[], ["--dry-run"]]:
+            result = self.migrate(*args, success=False)
+            self.assertIn("Conflicting configuration", result.stderr)
+            self.assertEqual(self.snapshot(), before)
+        last.write_bytes((self.root / CONFIGS[-1]).read_bytes())
+        self.assertEqual(self.migrate("--dry-run").stdout.count("Copy "), 3)
+        self.migrate()
+        self.assertEqual(last.read_bytes(), (self.root / CONFIGS[-1]).read_bytes())
+
+    def test_migration_rejects_unsafe_directories_and_entries(self):
+        self.seed_configs()
+        common = self.root / ".workbench"
+        external = self.base / "external"
+        external.mkdir()
+        for kind in ["file", "symlink", "dangling"]:
+            with self.subTest(kind=kind):
+                if kind == "file":
+                    common.write_text("not a directory")
+                else:
+                    common.symlink_to(external if kind == "symlink" else self.base / "missing")
+                self.migrate("--dry-run", success=False)
+                self.migrate(success=False)
+                common.unlink()
+        common.mkdir()
+        for parent in [self.root, common]:
+            for name in CONFIGS:
+                original = parent / name
+                saved = original.read_bytes() if original.exists() else None
+                if saved is not None:
+                    original.unlink()
+                original.symlink_to(self.base / "missing")
+                self.migrate(success=False)
+                self.assertTrue(original.is_symlink())
+                original.unlink()
+                if saved is not None:
+                    original.write_bytes(saved)
+        self.assertEqual(list(external.iterdir()), [])
+
+    def test_migration_partial_io_failure_retains_usable_legacy_and_can_resume(self):
+        (self.root / CONFIGS[0]).write_bytes(b"first configuration\n")
+        (self.root / CONFIGS[1]).write_bytes(b"x" * 4096)
+        before = self.snapshot()
+
+        def limit_writes():
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (128, 128))
+
+        result = subprocess.run(
+            [BINARY, "--root", str(self.root), "--migrate-configs"],
+            capture_output=True, text=True, timeout=15, preexec_fn=limit_writes)
+        self.assertNotEqual(result.returncode, 0)
+        for name, data in before.items():
+            self.assertEqual((self.root / name).read_bytes(), data)
+        common = self.root / ".workbench"
+        self.assertEqual((common / CONFIGS[0]).read_bytes(), before[CONFIGS[0]])
+        self.assertFalse((common / CONFIGS[1]).exists())
+        self.assertEqual(sorted(p.name for p in common.iterdir()), [CONFIGS[0]])
+        self.migrate()
+        self.assertEqual((common / CONFIGS[1]).read_bytes(), before[CONFIGS[1]])
+
+    def test_migration_rejects_nonregular_files_before_any_copy(self):
+        (self.root / CONFIGS[0]).write_bytes(b"first configuration")
+        target = self.root / CONFIGS[-1]
+        target.mkdir()
+        self.migrate(success=False)
+        self.assertFalse((self.root / ".workbench").exists())
+        target.rmdir()
+        os.mkfifo(target)
+        self.migrate(success=False)
+        self.assertFalse((self.root / ".workbench").exists())
+
+    def test_migration_empty_common_only_discovery_and_invalid_options(self):
+        self.assertIn("No configuration copies needed", self.migrate().stdout)
+        self.assertFalse((self.root / ".workbench").exists())
+        common = self.root / ".workbench"
+        common.mkdir()
+        (common / CONFIGS[2]).write_bytes(b"common-only provider identity")
+        before = self.snapshot()
+        self.invoke("--discover-project", "--migrate-configs", cwd=self.root)
+        self.assertEqual(self.snapshot(), before)
+        for option in ["--project-name", "--driver", "--build-alias", "--test-alias"]:
+            self.migrate(option, "value", success=False)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_init_common_directory_safety_and_legacy_compatibility(self):
+        common = self.root / ".workbench"
+        common.symlink_to(self.base, target_is_directory=True)
+        self.invoke("--root", self.root, "--dry-run", success=False)
+        self.invoke("--root", self.root, success=False)
+        self.assertFalse((self.base / MANIFEST).exists())
+        common.unlink()
+        common.mkdir()
+        (common / CONFIGS[2]).write_bytes(b"existing provider")
+        self.invoke("--root", self.root, "--driver", "./bin/driver.exe")
+        self.assertIn("(driver ./bin/driver.exe)", (common / MANIFEST).read_text())
+        self.assertEqual((common / CONFIGS[2]).read_bytes(), b"existing provider")
+        self.assertFalse((self.root / MANIFEST).exists())
+        self.invoke("--root", self.root, success=False)
 
 
 if __name__ == "__main__":

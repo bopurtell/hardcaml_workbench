@@ -340,15 +340,12 @@ let project t root =
 ;;
 
 let load_config p =
-  let path = Filename.concat p.root Config.filename in
-  match Sys_unix.file_exists path with
-  | `No -> None
-  | `Unknown -> failwith "Cannot inspect simulation config"
-  | `Yes ->
-    Some
-      (Files.read path ~max_bytes:Limits.config_bytes
-       |> Config.parse_string
-       |> Or_error.ok_exn)
+  Hardcaml_workbench_project_integration.Config_location.resolve
+    ~root:p.root
+    ~filename:Config.filename
+    ~max_bytes:Limits.config_bytes
+  |> Or_error.ok_exn
+  |> Option.map ~f:(fun file -> Config.parse_string file.contents |> Or_error.ok_exn)
 ;;
 
 let config_digest config = Files.digest (Sexp.to_string_mach (Config.sexp_of_t config))

@@ -140,19 +140,24 @@ let parse_workspace output =
 ;;
 
 let action_invocation
+  ?(jobs = 20)
   ?(build_alias = "@all")
   ?(test_alias = "@runtest")
   ~root
   ~environment
-  = function
+  action
+  =
+  if jobs <= 0 then invalid_arg "Dune action jobs must be positive";
+  let jobs_argument = "-j" ^ Int.to_string jobs in
+  match action with
   | V1.Dune_action.Build ->
     invocation
       ~root
       environment
-      [ "build"; "-j20"; "--root"; root; "--no-buffer"; build_alias ]
+      [ "build"; jobs_argument; "--root"; root; "--no-buffer"; build_alias ]
   | Test ->
     invocation
       ~root
       environment
-      [ "build"; "-j20"; "--root"; root; "--no-buffer"; test_alias ]
+      [ "build"; jobs_argument; "--root"; root; "--no-buffer"; test_alias ]
 ;;

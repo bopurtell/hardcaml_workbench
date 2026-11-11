@@ -52,3 +52,15 @@ val peek_snapshot
 (** Daemon shutdown only: cancel and reap owned processes and flush registry writes.
     Historical producers are never signalled by reader cancellation/shutdown. *)
 val shutdown : t -> unit Deferred.t
+
+module For_testing : sig
+  (** Pure admission boundary shared with the producer path. It validates exact
+      execution/report association, supported recipe and selected publications. *)
+  val validate_finalization_execution
+    :  stream_id:string
+    -> acceptance_requested:bool
+    -> metadata:Yojson.Safe.t
+    -> report:Yojson.Safe.t
+    -> Yojson.Safe.t
+    -> unit
+end

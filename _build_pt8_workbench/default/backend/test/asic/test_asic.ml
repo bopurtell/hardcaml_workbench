@@ -55,7 +55,7 @@ let launches root profile =
 
 (* These tests isolate provider observation/lifecycle. The full source supervisor, receipt
    validation and exact bundle contract are exercised by test_preparation. *)
-let attach_preparation service =
+let attach_preparation ?(on_prepare = fun () -> ()) service =
   let latest = ref None in
   Service.set_preparation_runner
     service
@@ -63,6 +63,7 @@ let attach_preparation service =
        (match operation with
         | Preparation.Operation.Prepare
             { submission_key; selection; expected_plan_identity } ->
+          on_prepare ();
           let plan =
             `Assoc
               [ "contract", `String "hardcaml-asic.methodology-plan"
@@ -1582,6 +1583,122 @@ let stage_service_fixtures root state_dir =
           "Stage observation or planning launched execution"))
 ;;
 
+let execution_envelope_fixtures root state_dir =
+  let service = Service.create ~state_dir:(state_dir ^ "-envelope") in
+  let preparations = ref 0 in
+  let on_prepare = ref (fun () -> ()) in
+  attach_preparation
+    ~on_prepare:(fun () -> incr preparations; !on_prepare ())
+    service;
+  let marker name = Filename.concat root name in
+  let enable name = Out_channel.write_all (marker name) ~data:"" in
+  let disable name =
+    if Poly.equal (Sys_unix.file_exists (marker name)) `Yes
+    then Core_unix.unlink (marker name)
+  in
+  let calls () = In_channel.read_lines (marker "calls") in
+  let provider_launches () =
+    List.count (calls ()) ~f:(fun line -> String.is_prefix line ~prefix:"[\"stages\"")
+  in
+  let launch ~key ~elaboration_only selection =
+    let%bind staged =
+      handle service root
+        (Stage_fresh { selection; elaboration_only; expected_plan_identity = None })
+    in
+    let intent_id = (Option.value_exn staged.fresh_intent).id in
+    let%map snapshot = settled service root (Launch_fresh { key; intent_id }) in
+    List.find_exn snapshot.workflows ~f:(fun w -> String.equal w.key key)
+  in
+  Monitor.protect
+    ~finally:(fun () ->
+      List.iter [ "active-synthesis-envelope"; "inactive-synthesis-capability" ] ~f:disable;
+      Service.shutdown service)
+    (fun () ->
+      (* A default provider may advertise collection support without opting in. *)
+      enable "inactive-synthesis-capability";
+      let physical = { (selection "envelope-default") with endpoint = "placement" } in
+      let%bind planned = settled service root (Plan physical) in
+      require (Option.is_some planned.preview) "Inactive capability restricted default planning";
+      let%bind default = launch ~key:"envelope-default" ~elaboration_only:false physical in
+      require
+        (Asic.Fresh.Phase.equal default.phase Completed && !preparations = 1)
+        "Default provider physical admission changed";
+      (* The same service has already cached a default probe. Activation must be fresh. *)
+      enable "active-synthesis-envelope";
+      let%bind () =
+        Deferred.List.iter
+          [ "floorplan"; "placement"; "cts"; "routing"; "timing"; "signoff" ]
+          ~how:`Sequential
+          ~f:(fun endpoint ->
+            let selected = { physical with endpoint } in
+            let before = calls () in
+            let%bind planned = settled service root (Plan selected) in
+            require
+              (Option.is_none planned.preview
+               && List.exists planned.operations ~f:(fun op ->
+                 String.equal op.kind "plan"
+                 && Option.value_map op.error ~default:false ~f:(fun error ->
+                   String.is_substring error ~substring:("Endpoint '" ^ endpoint ^ "'")
+                   && String.is_substring error ~substring:"synthesis-total-tasks-v1")))
+              "Active envelope did not reject physical planning with actionable diagnostic";
+            require
+              (not (List.exists (List.drop (calls ()) (List.length before)) ~f:(fun line ->
+                 String.is_prefix line ~prefix:"[\"flow\", \"plan\"")))
+              "Incompatible plan reached provider planning";
+            let before = provider_launches () in
+            let%map rejected =
+              launch ~key:("envelope-denied-" ^ endpoint) ~elaboration_only:false selected
+            in
+            require
+              (Asic.Fresh.Phase.equal rejected.phase Failed
+               && Option.is_none rejected.preparation_id
+               && Option.is_none rejected.prepared
+               && Option.is_none rejected.run
+               && Option.is_none rejected.reference
+               && !preparations = 1
+               && provider_launches () = before
+               && Option.value_map rejected.error ~default:false ~f:(fun error ->
+                 String.is_substring error ~substring:"synthesis-total-tasks-v1"))
+              "Incompatible fresh workflow prepared or allocated before rejection")
+      in
+      let before = calls () in
+      let%bind elab = launch ~key:"envelope-elab" ~elaboration_only:true physical in
+      require
+        (Asic.Fresh.Phase.equal elab.phase Completed
+         && Option.is_some elab.prepared
+         && Option.is_none elab.run
+         && !preparations = 2
+         && List.equal String.equal before (calls ()))
+        "Elaboration-only consulted or launched provider under active envelope";
+      let%bind planned = settled service root (Plan (selection "envelope-synth")) in
+      require (Option.is_some planned.preview) "Active envelope rejected synthesis planning";
+      let before = provider_launches () in
+      let%bind synth =
+        launch ~key:"envelope-synth" ~elaboration_only:false (selection "envelope-synth")
+      in
+      require
+        (Asic.Fresh.Phase.equal synth.phase Completed
+         && Option.is_some synth.run
+         && !preparations = 3
+         && provider_launches () = before + 1)
+        "Supported synthesis failed under active envelope";
+      (* Activation during preparation must also be caught before the stage process. *)
+      disable "active-synthesis-envelope";
+      on_prepare := (fun () -> enable "active-synthesis-envelope");
+      let before = provider_launches () in
+      let%bind changed = launch ~key:"envelope-handoff" ~elaboration_only:false physical in
+      require
+        (Asic.Fresh.Phase.equal changed.phase Failed
+         && Option.is_some changed.prepared
+         && Option.is_none changed.run
+         && !preparations = 4
+         && provider_launches () = before
+         && Option.value_map changed.error ~default:false ~f:(fun error ->
+           String.is_substring error ~substring:"synthesis-total-tasks-v1"))
+        "Changed execution envelope allocated an incompatible physical attempt";
+      Deferred.unit)
+;;
+
 let main () =
   let%bind () = evidence_file_fixtures () in
   declared_clock_fixtures ();
@@ -1633,6 +1750,7 @@ let main () =
       root, state_dir)
   in
   let%bind () = stage_service_fixtures root state_dir in
+  let%bind () = execution_envelope_fixtures root state_dir in
   (* Reaping and repeated cleanup use the same Async Process ownership record. No raw PID
      signalling or independent waitpid is involved. *)
   let%bind exited =
@@ -2265,6 +2383,81 @@ let main () =
               "Natural completion was signalled"))
       in
       let%bind () = Service.shutdown recovered in
+      let rejection_dir = state_dir ^ "-admission-rejection" in
+      let rejection_service = create ~directory:rejection_dir () in
+      let%bind planned = settled rejection_service root (Plan (selection "admission-rejected")) in
+      let rejected_request = Asic.Operation.Run { key = "admission-rejected"; preview = Option.value_exn planned.preview } in
+      let%bind rejected = settled rejection_service root rejected_request in
+      let rejected_run =
+        List.find_exn rejected.runs ~f:(fun r ->
+          String.equal r.Asic.Run.run.id "stream-admission-rejected")
+      in
+      let check_rejection (r : Asic.Run.t) =
+        require
+          (String.equal r.status "failed" && r.cursor = 3
+           && Option.is_none r.execution_file
+           && Option.value_map r.error ~default:false ~f:(fun error ->
+             String.is_substring error ~substring:"strict synthesis envelope"
+             && not (String.is_substring error ~substring:"monitor.ml"))
+           && List.equal String.equal
+                (List.filter_map r.stages ~f:(fun stage ->
+                   if stage.requested then Some stage.id else None))
+                [ "synthesis"; "floorplan"; "placement" ]
+           && List.for_all r.stages ~f:(fun stage ->
+             Asic.Stage.Status.equal stage.status
+               (if stage.requested then Skipped else Not_requested)))
+          "Pre-execution rejection lost its intended recipe or original failure"
+      in
+      check_rejection rejected_run;
+      let%bind refreshed = settled rejection_service root (Refresh rejected_run.run) in
+      check_rejection (List.find_exn refreshed.runs ~f:(fun r -> Run_ref.equal r.run rejected_run.run));
+      let%bind (_ : Asic.Snapshot.t) = settled rejection_service root rejected_request in
+      let%bind count = launches root "admission-rejected" in
+      require (count = 1) "Rejected admission was relaunched";
+      require
+        (Poly.equal (Sys_unix.file_exists (Filename.concat root "attempt-admission-rejected/inspect-called")) `No)
+        "Definitive admission rejection required named preflight inspection";
+      let%bind () = Service.shutdown rejection_service in
+      (* Reopen the old daemon's durable failure shape, not just the corrected
+         in-memory state. Only this fixture-owned cache is rewritten. *)
+      let%bind () = In_thread.run (fun () ->
+        let registry =
+          Sys_unix.ls_dir rejection_dir
+          |> List.find_exn ~f:(fun name ->
+            String.is_suffix name ~suffix:".sexp"
+            && not (String.is_substring name ~substring:"resources")
+            && not (String.is_substring name ~substring:"workloads"))
+          |> Filename.concat rejection_dir
+        in
+        let stored = Sexp.of_string (In_channel.read_all registry) in
+        let rewrite_run = function
+          | Sexp.List fields ->
+            Sexp.List (List.map fields ~f:(function
+              | Sexp.List [ Sexp.Atom "cursor"; _ ] -> Sexp.List [ Sexp.Atom "cursor"; Sexp.Atom "0" ]
+              | Sexp.List [ Sexp.Atom "status"; _ ] -> Sexp.List [ Sexp.Atom "status"; Sexp.Atom "observation_unavailable" ]
+              | Sexp.List [ Sexp.Atom "error"; _ ] -> Sexp.List [ Sexp.Atom "error"; Sexp.List [ Sexp.Atom "old missing named preflight reference" ] ]
+              | Sexp.List [ Sexp.Atom "stages"; _ ] -> Sexp.List [ Sexp.Atom "stages"; Sexp.List [] ]
+              | field -> field))
+          | _ -> failwith "Expected retained run"
+        in
+        let stored = match stored with
+          | Sexp.List fields -> Sexp.List (List.map fields ~f:(function
+              | Sexp.List [ Sexp.Atom "runs"; Sexp.List runs ] ->
+                Sexp.List [ Sexp.Atom "runs"; Sexp.List (List.map runs ~f:rewrite_run) ]
+              | field -> field))
+          | _ -> failwith "Expected registry"
+        in
+        Out_channel.write_all registry ~data:(Sexp.to_string stored))
+      in
+      let reopened_rejection = create ~directory:rejection_dir () in
+      let%bind recovered_rejection = settled reopened_rejection root (Refresh rejected_run.run) in
+      check_rejection (List.find_exn recovered_rejection.runs ~f:(fun r -> Run_ref.equal r.run rejected_run.run));
+      let%bind count = launches root "admission-rejected" in
+      require (count = 1) "Historical rejection recovery relaunched producer";
+      require
+        (Poly.equal (Sys_unix.file_exists (Filename.concat root "attempt-admission-rejected/inspect-called")) `No)
+        "Historical rejection recovery required broken named preflight inspection";
+      let%bind () = Service.shutdown reopened_rejection in
       let race_service = create () in
       let%bind () =
         Deferred.List.iter
@@ -2304,7 +2497,15 @@ let main () =
                    match stage.status with
                    | Running | Pending -> false
                    | _ -> true))
-                "Unavailable final observation retained stale active stages";
+                 "Unavailable final observation retained stale active stages";
+             if String.equal profile "exit-race-unavailable"
+             then
+               require
+                 (Option.value_map run.error ~default:false ~f:(fun error ->
+                    String.is_substring error ~substring:"ASIC command failed (exited with code 2)"
+                    && String.is_substring error ~substring:"fixture terminal inspection unavailable"
+                    && not (String.is_substring error ~substring:"monitor.ml")))
+                 "Unavailable observation masked producer error or exposed a monitor backtrace";
             let%bind before = launches root profile in
             let%bind (_ : Asic.Snapshot.t) =
               settled race_service root (Run { key = profile; preview })
@@ -2358,12 +2559,55 @@ let main () =
       require
         (String.equal result.state "completed" && Option.is_some result.attempt)
         "Seven-stage finalization failed eligibility/hydration";
-      require
-        (String.equal
-           (Option.value_exn (summary finalized run.id).terminal).physical_completion
-           "full")
-        "Seven-stage finalized terminal result did not hydrate";
-      Deferred.unit)
+       require
+         (String.equal
+            (Option.value_exn (summary finalized run.id).terminal).physical_completion
+            "full")
+         "Seven-stage finalized terminal result did not hydrate";
+       (* The optional synthesis route needs explicit provider support in the
+          current query environment, never inferred from CLI4 or a checkpoint. *)
+       Out_channel.write_all (Filename.concat root "synthesis-finalization") ~data:"";
+       let synthesis = create ~directory:(state_dir ^ "-synthesis-finalization") () in
+       let%bind registered =
+         handle synthesis root
+           (Register { attempt = physical_attempt; stream_id = "stream-terminal" })
+       in
+       let run = (List.hd_exn registered.runs).run in
+       let%bind loaded = settled synthesis root (Load_summary run) in
+       let execution_file = (summary loaded run.id).execution_file in
+       let finalize key acceptance =
+         Asic.Operation.Finalize { key; run; execution_file; acceptance }
+       in
+       let%bind unsupported = settled synthesis root (finalize "unsupported" None) in
+       let result snapshot key =
+         List.find_exn snapshot.Asic.Snapshot.finalizations ~f:(fun f ->
+           String.equal f.Asic.Finalization.key key)
+       in
+       require
+         (String.equal (result unsupported "unsupported").state "failed"
+          && Option.is_none (result unsupported "unsupported").attempt)
+         "Synthesis collection inferred implicit provider support";
+       Out_channel.write_all (Filename.concat root "synthesis-collection-capability") ~data:"";
+       let acceptance : Asic.Acceptance.t =
+         { support_tools = root; precheck_python = "/usr/bin/python3"
+         ; testbench = root ^ "/bench.v"; testbench_top = "top"; replay_trace = root ^ "/trace" }
+       in
+       let%bind denied = settled synthesis root (finalize "synthesis-accept" (Some acceptance)) in
+       require
+         (String.equal (result denied "synthesis-accept").state "failed"
+          && Option.is_none (result denied "synthesis-accept").attempt)
+         "Synthesis-only acceptance was admitted";
+       let%bind collected = settled synthesis root (finalize "synthesis-collect" None) in
+       require
+         (String.equal (result collected "synthesis-collect").state "completed"
+          && Option.is_some (result collected "synthesis-collect").attempt)
+         "Explicitly supported synthesis collection did not complete";
+       let terminal = Option.value_exn (summary collected run.id).terminal in
+       require
+         (String.equal terminal.physical_completion "synthesis"
+          && String.equal terminal.acceptance "not_evaluated")
+         "Synthesis collection fabricated physical completion or acceptance";
+       Deferred.unit)
 ;;
 
 let () =

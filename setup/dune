@@ -1,6 +1,11 @@
 (library
  (name hardcaml_workbench_setup)
- (modules initialization no_clobber project_discovery simulation_setup)
+ (modules
+  config_migration
+  initialization
+  no_clobber
+  project_discovery
+  simulation_setup)
  (libraries
   core
   core_unix

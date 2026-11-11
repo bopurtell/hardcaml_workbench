@@ -1198,7 +1198,7 @@ let test_driver_discovery ~root ~log_dir =
   Initialization.publish plan |> Result.ok_or_failwith;
   require
     (Poly.equal
-       (Sys_unix.file_exists (Filename.concat root Integration.Manifest.filename))
+       (Sys_unix.file_exists (Initialization.path plan))
        `Yes)
     "test manifest was not written";
   let%bind loaded_manifest = Service.load_manifest root in
@@ -1206,7 +1206,24 @@ let test_driver_discovery ~root ~log_dir =
     (match loaded_manifest with
      | Service.Manifest_valid _ -> true
      | Manifest_absent | Manifest_invalid _ -> false)
-    "service did not load the test manifest";
+     "service did not load the test manifest";
+  let initialized_contents = In_channel.read_all (Initialization.path plan) in
+  Out_channel.write_all
+    (Initialization.path plan)
+    ~data:
+      (initialized_contents ^ String.make Integration.Config_location.max_config_bytes ' ');
+  let%bind oversized_manifest = Service.load_manifest root in
+  require
+    (match oversized_manifest with
+     | Service.Manifest_invalid reason -> String.is_substring reason ~substring:"byte limit"
+     | Manifest_absent | Manifest_valid _ -> false)
+    "Generic manifest did not enforce shared config size limit";
+  Out_channel.write_all (Initialization.path plan) ~data:initialized_contents;
+  (* Exercise the integrated initializer's common path first, then retain the legacy
+     opening and explicit old -> both -> common refresh coverage below. *)
+  Core_unix.rename
+    ~src:(Initialization.path plan)
+    ~dst:(Filename.concat root Integration.Manifest.filename);
   let mode = ref `Valid in
   let observed_environment = ref None in
   let events = ref [] in
@@ -1351,8 +1368,24 @@ let test_driver_discovery ~root ~log_dir =
       require
         (Job.State.equal restored.state Complete)
         "generation capability did not restore";
+      let legacy_manifest = Filename.concat root Integration.Manifest.filename in
+      let common_manifest =
+        Integration.Config_location.preferred_path
+          ~root
+          ~filename:Integration.Manifest.filename
+      in
+      Out_channel.write_all common_manifest ~data:(In_channel.read_all legacy_manifest);
+      let%bind dual = refresh () in
+      let%bind dual = wait_terminal service dual.id in
+      require (Job.State.equal dual.state Complete) "Identical dual manifest failed";
+      Core_unix.unlink legacy_manifest;
+      let%bind relocated = refresh () in
+      let%bind relocated = wait_terminal service relocated.id in
+      require
+        (Job.State.equal relocated.state Complete)
+        "Common manifest changed project-root relative driver semantics";
       Out_channel.write_all
-        (Filename.concat root Integration.Manifest.filename)
+        common_manifest
         ~data:
           "(lang hardcaml-workbench 99)\n\
            (project (name broken))\n\
@@ -1365,7 +1398,7 @@ let test_driver_discovery ~root ~log_dir =
         Unsupported_operation
         "invalid manifest refresh was accepted";
       Out_channel.write_all
-        (Filename.concat root Integration.Manifest.filename)
+        common_manifest
         ~data:
           "(lang hardcaml-workbench 1)\n\
            (project (name discovery-test))\n\

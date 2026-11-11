@@ -2,6 +2,8 @@
  (name test_project_integration)
  (libraries
   core
+  core_unix
+  core_unix.filename_unix
   hardcaml_workbench_project_integration
   hardcaml_workbench_protocol)
  (preprocess

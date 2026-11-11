@@ -1,7 +1,80 @@
 open! Core
 open Hardcaml_workbench_protocol
+
 module H = Workspace_host
 module O = Overview_tiles
+
+let%test_unit "rejected and unavailable execution retain exact endpoint without invented prefix" =
+  let intent = Fs0_fixture.fresh_intent "rejected" in
+  let intent = { intent with selection = { intent.selection with endpoint = "placement" } } in
+  let workflow =
+    { (Fs0_fixture.workflow ~run:Fs0_fixture.run_a ~phase:Failed "rejected" intent) with
+      elaboration_status = "completed"
+    ; error = Some "placement rejected by synthesis-only envelope"
+    }
+  in
+  let run =
+    { (Fs0_fixture.run Fs0_fixture.run_a) with status = "observation_unavailable" }
+  in
+  let snapshot = { Fs0_fixture.snapshot with runs = [ run ]; workflows = [ workflow ] } in
+  let items = O.checklist_items ~asic:(Some snapshot) ~run:run.run in
+  assert (List.equal String.equal (List.map items ~f:O.checklist_id)
+            [ "preparation:elaboration"; "placement" ]);
+  let stage = List.last_exn items |> O.checklist_row ~run:run.run ~selected:false in
+  assert (String.equal stage.value "unconfirmed");
+  assert (not (Option.equal O.Status.equal stage.status (Some Completed)));
+  let rows = O.workflow_endpoint_rows { workflow with run = None } in
+  assert (List.equal String.equal (List.map rows ~f:(fun r -> r.O.label)) [ "placement" ]);
+  assert (List.is_empty (O.workflow_endpoint_rows
+                          { workflow with intent = { intent with elaboration_only = true } }));
+  (* Explicit retained stage truth wins even when workflow observation failed. *)
+  let observed : Asic.Stage.t =
+    { id = "synthesis"; name = "Synthesis"; status = Completed; requested = true
+    ; reason = None; action = None; execution_timing = None }
+  in
+  let snapshot = { snapshot with runs = [ { run with stages = [ observed ] } ] } in
+  let items = O.checklist_items ~asic:(Some snapshot) ~run:run.run in
+  assert (List.exists items ~f:(function
+    | Physical_stage s -> String.equal s.id "synthesis" && Asic.Stage.Status.equal s.status Completed
+    | _ -> false));
+  assert (List.exists items ~f:(function
+    | Physical_stage s -> String.equal s.id "placement" && Asic.Stage.Status.equal s.status (Unknown "unconfirmed")
+    | _ -> false))
+;;
+
+let%test_unit "failure overview unwraps nested OCaml failure and keeps raw detail accessible" =
+  let raw = "Final observation unavailable: (monitor.ml.Error (Failure \"missing preflight after rejected placement\") (\"Raised at internal.ml:42\"))" in
+  assert (String.equal (Presentation.failure_summary raw)
+            "Final observation unavailable: missing preflight after rejected placement");
+  let host, data, find =
+    Host_view.refinement_fixture Hardcaml_workbench_workspaces.Overview.definition
+  in
+  let run = { (Fs0_fixture.run Fs0_fixture.run_a) with
+    status = "observation_unavailable"; error = Some raw } in
+  let data = { data with asic = Some { Fs0_fixture.snapshot with runs = [ run ] } } in
+  let rows = Host_view.utility_rows host data (find "stage-checklist") |> Option.value_exn in
+  assert (List.exists rows ~f:(fun r ->
+    String.is_substring r.O.value ~substring:"missing preflight"
+    || List.exists r.details ~f:(fun line -> String.is_substring line ~substring:"missing preflight")));
+  assert (List.exists rows ~f:(fun r -> List.mem r.O.details raw ~equal:String.equal));
+  let workflow =
+    { (Fs0_fixture.workflow ~phase:Failed "rejected" (Fs0_fixture.fresh_intent "failure")) with
+      elaboration_status = "completed"; error = Some raw }
+  in
+  let snapshot = { Fs0_fixture.snapshot with workflows = [ workflow ] } in
+  let host = { host with planned_run = Planned_run.receive host.planned_run ~revision:1 snapshot } in
+  let rows = Host_view.planned_source_rows host (find "planned-run") in
+  assert (List.exists rows ~f:(fun r ->
+    Planned_run.equal_role r.role Error
+    && String.is_substring r.text ~substring:"missing preflight"
+    && not (String.is_substring r.text ~substring:"monitor.ml.Error")));
+  let tile = find "planned-run" in
+  let host = H.set_local host tile.id { (H.local host tile.id) with utility_detail = true } in
+  assert (List.exists (Host_view.planned_source_rows host tile)
+            ~f:(fun r -> String.equal r.Planned_run.text raw));
+  assert (String.equal (Presentation.failure_summary "(unknown_wrapper (backtrace raw))")
+            "Diagnostic details available in detail view")
+;;
 
 let%test_unit "manual launch palette retains exact local stage receipt through \
                same-selection supersession and restaging"

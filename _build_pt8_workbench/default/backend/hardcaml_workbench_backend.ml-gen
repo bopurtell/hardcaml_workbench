@@ -15,6 +15,9 @@ module Asic_process = Hardcaml_workbench_backend__Asic_process
 (** @canonical Hardcaml_workbench_backend.Asic_public *)
 module Asic_public = Hardcaml_workbench_backend__Asic_public
 
+(** @canonical Hardcaml_workbench_backend.Asic_rejection *)
+module Asic_rejection = Hardcaml_workbench_backend__Asic_rejection
+
 (** @canonical Hardcaml_workbench_backend.Asic_resources_service *)
 module Asic_resources_service = Hardcaml_workbench_backend__Asic_resources_service
 

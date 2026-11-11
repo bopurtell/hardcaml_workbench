@@ -5,6 +5,16 @@ It summarizes the ASIC PT.0–PT.8 track, acceptance and preservation rules
 without replacing this queue or the ASIC queue. Refactor continuation plans are
 grouped under [migration guides](migration_guides/README.md).
 
+## WB-049 common project configuration — 2026-11-11
+
+Delivered `.workbench/` lookup for generic, ASIC, simulation and preparation
+configuration, legacy compatibility, explicit conflict diagnostics and dry-run/
+no-clobber copy migration. New initialization uses the common directory. Example
+main/development launchers and FIFO setup support both locations and recovery.
+[Migration policy, commands and verification](migration_guides/project-configuration.md).
+Focused loader/backend/setup and script tests pass; no live configurations were
+migrated and no real EDA was run. PT.3 consumer acceptance remains separate.
+
 ## Real fresh-prefix pyramid tests — 2026-11-11
 
 Owner activated this bounded coverage item from the broader deferred test backlog.

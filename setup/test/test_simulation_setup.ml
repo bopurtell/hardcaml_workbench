@@ -143,7 +143,7 @@ let%test_unit "preview names the destination, fields and provider state; prepare
     let preview = Simulation_setup.preview plan in
     assert_contains
       preview
-      [ "Destination:               " ^ root ^/ Config.filename
+      [ "Destination:               " ^ root ^/ ".workbench" ^/ Config.filename
       ; "never overwritten"
       ; "provider_executable:       " ^ executable
       ; "exists and is executable"
@@ -197,6 +197,7 @@ let%test_unit "publication is no-clobber even against a writer racing after prev
   with_project (fun ~base ~root ->
     let plan = prepare_exn ~root "/p" in
     let path = Simulation_setup.path plan in
+    Core_unix.mkdir (Filename.dirname path);
     Core_unix.symlink ~target:(base ^/ "elsewhere") ~link_name:path;
     assert (Result.is_error (Simulation_setup.publish plan));
     [%test_eq: string] (Core_unix.readlink path) (base ^/ "elsewhere");
@@ -205,7 +206,7 @@ let%test_unit "publication is no-clobber even against a writer racing after prev
     [%test_eq: string] (In_channel.read_all path) (Simulation_setup.contents plan);
     assert (Result.is_error (Simulation_setup.publish plan));
     [%test_eq: string] (In_channel.read_all path) (Simulation_setup.contents plan);
-    [%test_eq: string list] (listing root) [ "dune-project"; Config.filename ])
+    [%test_eq: string list] (listing root) [ ".workbench"; "dune-project" ])
 ;;
 
 let configure ~root executable ?args ?discovery_timeout_seconds () =
@@ -260,10 +261,11 @@ let%test_unit "check: timeout covers child exit and inherited output pipes indep
 
 let%test_unit "check: not configured and invalid configuration run no provider" =
   with_project (fun ~base ~root ->
-    let path = root ^/ Config.filename in
+    let path = root ^/ ".workbench" ^/ Config.filename in
     (match check root with
      | Not_configured { path = reported } -> [%test_eq: string] reported path
      | _ -> failwith "expected Not_configured");
+    Core_unix.mkdir (Filename.dirname path);
     let executable = provider ~base "p.sh" ~body:"exit 0" in
     List.iter
       [ `Text "((schema_version 1))"
@@ -328,7 +330,7 @@ let%test_unit "check: discovered catalog lists every suite and case; only discov
     [%test_eq: string list]
       (calls ~base)
       [ root ^ " --prefix two words discover --protocol-version 1" ];
-    [%test_eq: string list] (listing root) [ "dune-project"; Config.filename ])
+    [%test_eq: string list] (listing root) [ ".workbench"; "dune-project" ])
 ;;
 
 let%test_unit "check: configured with zero suites is distinct and successful" =
@@ -348,7 +350,7 @@ let%test_unit "check: configured with zero suites is distinct and successful" =
 let%test_unit "check: provider failures are reported with the provider's error" =
   with_project (fun ~base ~root ->
     let failed ~body ?discovery_timeout_seconds fragments =
-      let path = root ^/ Config.filename in
+      let path = root ^/ ".workbench" ^/ Config.filename in
       if Sys_unix.file_exists_exn path then Core_unix.unlink path;
       configure ~root (provider ~base "p.sh" ~body) ?discovery_timeout_seconds ();
       let outcome = check root in
@@ -372,7 +374,7 @@ let%test_unit "check: provider failures are reported with the provider's error" 
       ~body:"head -c 1100000 /dev/zero | tr '\\000' a"
       [ "discovery stdout exceeds 1 MiB" ];
     (* A provider that is configured but not built yet. *)
-    let path = root ^/ Config.filename in
+    let path = root ^/ ".workbench" ^/ Config.filename in
     Core_unix.unlink path;
     configure ~root (base ^/ "bin" ^/ "not-built.exe") ();
     let outcome = check root in

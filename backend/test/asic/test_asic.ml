@@ -2016,6 +2016,29 @@ let main () =
       let%bind warm_reports = reports root in
       require (warm_reports = initial_reports) "Warm switch queried provider report";
       let%bind () = Service.shutdown service in
+      let common_dir = Filename.concat root ".workbench" in
+      Core_unix.mkdir common_dir;
+      let legacy_config = Filename.concat root Config.filename in
+      let common_config = Filename.concat common_dir Config.filename in
+      let config_bytes = In_channel.read_all legacy_config in
+      Out_channel.write_all common_config ~data:config_bytes;
+      let dual = create () in
+      let%bind dual_snapshot = handle dual root Get in
+      require
+        (List.equal Asic.Launch.equal second.launches dual_snapshot.launches)
+        "Identical dual ASIC configs changed persisted provider scope";
+      let%bind () = Service.shutdown dual in
+      Out_channel.write_all common_config ~data:"invalid common ASIC configuration";
+      let invalid = create () in
+      let%bind invalid_result = Service.handle invalid ~root ~environment Get in
+      require (Result.is_error invalid_result) "Invalid common ASIC config fell back";
+      let%bind () = Service.shutdown invalid in
+      Out_channel.write_all common_config ~data:config_bytes;
+      Core_unix.unlink legacy_config;
+      let preparation_name = "hardcaml-workbench-preparation.sexp" in
+      Core_unix.rename
+        ~src:(Filename.concat root preparation_name)
+        ~dst:(Filename.concat common_dir preparation_name);
       let restarted = create () in
       let%bind restored = settled restarted root (Load_summary r1) in
       require

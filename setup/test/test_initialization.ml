@@ -10,6 +10,12 @@ let with_project f =
         ~data:"(lang dune 3.22)\n";
       f root)
     ~finally:(fun () ->
+      let common = Filename.concat root ".workbench" in
+      if Sys_unix.file_exists_exn common
+      then (
+        List.iter (Sys_unix.ls_dir common) ~f:(fun name ->
+          Core_unix.unlink (Filename.concat common name));
+        Core_unix.rmdir common);
       List.iter (Sys_unix.ls_dir root) ~f:(fun name ->
         Core_unix.unlink (Filename.concat root name));
       Core_unix.rmdir root)
@@ -40,6 +46,7 @@ let%test_unit "publication refuses a file or dangling symlink created after prep
     with_project (fun root ->
       let plan = prepare_exn root in
       let path = Initialization.path plan in
+      Core_unix.mkdir (Filename.dirname path);
       (match occupant with
        | `File -> Out_channel.write_all path ~data:"created by another writer\n"
        | `Symlink ->
@@ -51,8 +58,8 @@ let%test_unit "publication refuses a file or dangling symlink created after prep
        | `Symlink ->
          [%test_eq: string] (Core_unix.readlink path) (Filename.concat root "missing"));
       [%test_eq: string list]
-        (List.sort (Sys_unix.ls_dir root) ~compare:String.compare)
-        [ "dune-project"; "hardcaml-workbench.sexp" ]))
+        (List.sort (Sys_unix.ls_dir (Filename.dirname path)) ~compare:String.compare)
+        [ "hardcaml-workbench.sexp" ]))
 ;;
 
 let%test_unit "publishing the same plan twice preserves the complete first publication" =

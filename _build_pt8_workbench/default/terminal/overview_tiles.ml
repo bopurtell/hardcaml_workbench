@@ -28,6 +28,8 @@ module Status = struct
     | Skipped -> "skipped"
     | Cancelled -> "cancelled"
     | Unsupported -> "unsupported"
+    | Unrecognized ("observation_unavailable" | "unconfirmed") -> "unconfirmed"
+    | Unrecognized "not_started" -> "not started"
     | Unrecognized value -> "unknown: " ^ value
   ;;
 end
@@ -214,6 +216,39 @@ let observed_stages ~asic ~run =
   execution ~asic ~run |> Option.value_map ~default:[] ~f:(fun run -> run.stages)
 ;;
 
+(** An endpoint is captured intent, not evidence of its prefix or its outcome. Do not
+    use the current catalog or a global preview to reconstruct a historical recipe. *)
+let unconfirmed_endpoint (selection : Asic.Selection.t) : Asic.Stage.t =
+  { id = selection.endpoint
+  ; name = selection.endpoint
+  ; requested = true
+  ; status = Unknown "unconfirmed"
+  ; reason =
+      Some
+        "Captured requested endpoint; stage observation unavailable. Prefix stages are \
+         not reported."
+  ; action = None
+  ; execution_timing = None
+  }
+;;
+
+let workflow_endpoint_rows (w : Asic.Fresh.Workflow.t) =
+  if w.intent.elaboration_only
+  then []
+  else
+    [ row
+        ~status:(Status.Unrecognized "unconfirmed")
+        ~role:Muted
+        ~time:"unknown"
+        ~details:
+          [ "Workflow: " ^ w.id
+          ; "Requested endpoint only; no physical stage observation or prefix reported"
+          ]
+        w.intent.selection.endpoint
+        "unconfirmed"
+    ]
+;;
+
 (** Supplementary observations are deliberately not [Asic.Stage.t]: they have no launch
     endpoint and must never enter physical stage action inference. *)
 type checklist_item =
@@ -250,6 +285,23 @@ let timing_inspection_target ~asic ~run =
 
 let checklist_items ~asic ~run =
   let stages = observed_stages ~asic ~run in
+  let captured_selection =
+    Option.first_some
+      (Option.bind (execution ~asic ~run) ~f:(fun r -> r.selection))
+      (Option.bind asic ~f:(fun (s : Asic.Snapshot.t) ->
+         List.find_map s.workflows ~f:(fun w ->
+           if Option.exists w.run ~f:(Run_ref.equal run) && not w.intent.elaboration_only
+           then Some w.intent.selection
+           else None)))
+  in
+  let endpoint_only = List.is_empty stages && Option.is_some captured_selection in
+  let stages =
+    match captured_selection with
+    | Some selection
+      when not (List.exists stages ~f:(fun s -> String.equal s.Asic.Stage.id selection.endpoint)) ->
+      stages @ [ unconfirmed_endpoint selection ]
+    | _ -> stages
+  in
   let timing = Timing_analysis (timing_summary ~asic ~run) in
   let rec insert = function
     | [] -> [ timing ]
@@ -261,7 +313,9 @@ let checklist_items ~asic ~run =
   in
   Elaboration_preparation
   ::
-  (if List.exists stages ~f:(fun s -> String.equal s.Asic.Stage.id "timing")
+  (if endpoint_only
+   then List.map stages ~f:(fun s -> Physical_stage s)
+   else if List.exists stages ~f:(fun s -> String.equal s.Asic.Stage.id "timing")
    then
      List.map stages ~f:(fun s ->
        let s =

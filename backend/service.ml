@@ -444,17 +444,18 @@ type manifest_load =
 let load_manifest root =
   Monitor.try_with (fun () ->
     In_thread.run (fun () ->
-      let path = Filename.concat root Integration.Manifest.filename in
-      match Sys_unix.file_exists path with
-      | `No | `Unknown -> Manifest_absent
-      | `Yes ->
-        (match (Core_unix.stat path).st_kind with
-         | S_REG ->
-           (match Integration.Manifest.parse_string (In_channel.read_all path) with
-            | Ok manifest -> Manifest_valid manifest
-            | Error message ->
-              Manifest_invalid (sprintf "%s: %s" Integration.Manifest.filename message))
-         | _ -> Manifest_invalid (Integration.Manifest.filename ^ ": not a regular file"))))
+      match
+        Integration.Config_location.resolve
+          ~root
+          ~filename:Integration.Manifest.filename
+          ~max_bytes:Integration.Config_location.max_config_bytes
+      with
+      | Error error -> Manifest_invalid (Error.to_string_hum error)
+      | Ok None -> Manifest_absent
+      | Ok (Some file) ->
+        (match Integration.Manifest.parse_string file.contents with
+         | Ok manifest -> Manifest_valid manifest
+         | Error message -> Manifest_invalid (sprintf "%s: %s" file.path message))))
   >>| function
   | Ok result -> result
   | Error exn ->

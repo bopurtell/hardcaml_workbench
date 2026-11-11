@@ -325,14 +325,19 @@ let persist t p =
   ()
 ;;
 
+let load_config_file ~root ~filename parse =
+  Hardcaml_workbench_project_integration.Config_location.resolve
+    ~root
+    ~filename
+    ~max_bytes:Hardcaml_workbench_project_integration.Config_location.max_config_bytes
+  |> Or_error.ok_exn
+  |> Option.map ~f:(fun file -> parse file.contents |> Or_error.ok_exn)
+;;
+
 let load_project t ~root ~environment =
   let%bind config =
     In_thread.run (fun () ->
-      let filename = Filename.concat root Config.filename in
-      match Sys_unix.file_exists filename with
-      | `No -> None
-      | `Unknown -> failwith "Cannot inspect ASIC configuration"
-      | `Yes -> Some (Config.parse_string (read_bounded filename 65536) |> Or_error.ok_exn))
+      load_config_file ~root ~filename:Config.filename Config.parse_string)
   in
   let%bind () =
     In_thread.run (fun () ->
@@ -2287,16 +2292,14 @@ let fresh_scope ?(physical = true) p =
       Hardcaml_workbench_project_integration.Preparation_config
     in
     let preparation =
-      Preparation_config.parse_string
-        (read_bounded (Filename.concat p.root Preparation_config.filename) 65536)
-      |> Or_error.ok_exn
+      load_config_file
+        ~root:p.root
+        ~filename:Preparation_config.filename
+        Preparation_config.parse_string
+      |> Option.value_exn ~message:"Preparation configuration is missing"
     in
-    let asic_path = Filename.concat p.root Config.filename in
     let current =
-      match Sys_unix.file_exists asic_path with
-      | `No -> None
-      | `Yes | `Unknown ->
-        Some (Config.parse_string (read_bounded asic_path 65536) |> Or_error.ok_exn)
+      load_config_file ~root:p.root ~filename:Config.filename Config.parse_string
     in
     Public.require
       (Option.equal Config.equal current p.config)

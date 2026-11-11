@@ -63,11 +63,13 @@ let load_config root =
   let%map result =
     Monitor.try_with_or_error (fun () ->
       In_thread.run (fun () ->
-        let path = Filename.concat root Config.filename in
-        match Sys_unix.file_exists path with
-        | `No -> None
-        | `Yes | `Unknown ->
-          Some (Config.parse_string (In_channel.read_all path) |> Or_error.ok_exn)))
+        Hardcaml_workbench_project_integration.Config_location.resolve
+          ~root
+          ~filename:Config.filename
+          ~max_bytes:Hardcaml_workbench_project_integration.Config_location.max_config_bytes
+        |> Or_error.ok_exn
+        |> Option.map ~f:(fun file ->
+          Config.parse_string file.contents |> Or_error.ok_exn)))
   in
   match result with
   | Ok None -> Availability.Unavailable Not_configured, None

@@ -1,6 +1,7 @@
 open! Core
 module Initialization = Hardcaml_workbench_setup.Initialization
 module Project_discovery = Hardcaml_workbench_setup.Project_discovery
+module Config_migration = Hardcaml_workbench_setup.Config_migration
 
 let report_error message =
   eprintf "hardcaml-workbench-init: %s\n%!" message;
@@ -11,7 +12,10 @@ let command =
   Command.basic
     ~summary:"Initialize Hardcaml Workbench in an existing Dune directory"
     ~readme:(fun () ->
-      "Creates only hardcaml-workbench.sexp, without replacing existing files.\n\
+      "Creates .workbench/hardcaml-workbench.sexp without replacing existing files.\n\
+       --migrate-configs copies the four legacy configuration basenames into .workbench/,\n\
+       retaining originals. Equal destinations are skipped; differing files and unsafe\n\
+       paths are errors. --dry-run lists every proposed copy without writing.\n\
        Choose the root with exactly one of --root or --discover-project.\n\
        --root ROOT must directly contain dune-project; relative roots use the current\n\
        directory and no ancestor search is performed. --discover-project instead selects\n\
@@ -42,7 +46,9 @@ let command =
        flag
          "--dry-run"
          no_arg
-         ~doc:" validate and print the manifest without writing files"
+         ~doc:" preview initialization or migration without writing files"
+     and migrate_configs =
+       flag "--migrate-configs" no_arg ~doc:" copy legacy configs into .workbench/"
      in
      fun () ->
        let root =
@@ -60,17 +66,35 @@ let command =
            Option.iter note ~f:(eprintf "hardcaml-workbench-init: %s\n%!");
            root
        in
-       match
-         Initialization.prepare ~root ?project_name ?driver ?build_alias ?test_alias ()
-       with
-       | Error message -> report_error message
-       | Ok plan ->
-         if dry_run
-         then printf "%s%!" (Initialization.contents plan)
-         else (
-           match Initialization.publish plan with
-           | Error message -> report_error message
-           | Ok () -> printf "Created %s\n%!" (Initialization.path plan)))
+       if migrate_configs
+       then (
+         if List.exists
+              [ project_name; driver; build_alias; test_alias ]
+              ~f:Option.is_some
+         then
+           report_error "--migrate-configs cannot be combined with initialization options";
+         match Config_migration.prepare ~root with
+         | Error message -> report_error message
+         | Ok plan ->
+           let preview = Config_migration.preview plan in
+           if dry_run
+           then printf "%s%!" preview
+           else (
+             match Config_migration.publish plan with
+             | Error message -> report_error message
+             | Ok () -> printf "%s%!" preview))
+       else (
+         match
+           Initialization.prepare ~root ?project_name ?driver ?build_alias ?test_alias ()
+         with
+         | Error message -> report_error message
+         | Ok plan ->
+           if dry_run
+           then printf "%s%!" (Initialization.contents plan)
+           else (
+             match Initialization.publish plan with
+             | Error message -> report_error message
+             | Ok () -> printf "Created %s\n%!" (Initialization.path plan))))
 ;;
 
 let () = Command_unix.run command

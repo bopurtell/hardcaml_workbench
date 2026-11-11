@@ -227,6 +227,38 @@ let review_store ~root ~state_dir ~config ~catalog =
   require (List.length names = 3 && truncated) "Corrupt-directory scan was not bounded";
   let store = Store.create ~state_dir in
   let p = Store.project store root in
+  let legacy = Filename.concat root Config.filename in
+  let common =
+    Hardcaml_workbench_project_integration.Config_location.preferred_path
+      ~root
+      ~filename:Config.filename
+  in
+  Files.mkdir (Filename.dirname common);
+  let bytes = In_channel.read_all legacy in
+  let loaded () = Option.value_exn (Store.load_config p) in
+  let identity = Store.config_digest (loaded ()) in
+  Files.atomic common bytes;
+  require (Config.equal (loaded ()) config) "Identical dual simulation configs failed";
+  Core_unix.unlink legacy;
+  require
+    (String.equal (Store.config_digest (loaded ())) identity)
+    "Moving simulation config changed provider identity";
+  Files.atomic common "invalid new configuration";
+  require
+    (Result.is_error (Or_error.try_with (fun () -> Store.load_config p)))
+    "Invalid common simulation config accepted";
+  Files.atomic legacy bytes;
+  require
+    (Result.is_error (Or_error.try_with (fun () -> Store.load_config p)))
+    "Invalid common simulation config fell back to legacy";
+  Files.atomic common bytes;
+  Files.atomic legacy
+    (Sexp.to_string_mach (Config.sexp_of_t { config with run_timeout_seconds = 3 }));
+  require
+    (Result.is_error (Or_error.try_with (fun () -> Store.load_config p)))
+    "Conflicting simulation provider scopes accepted";
+  Files.atomic legacy bytes;
+  Core_unix.unlink common;
   p.discovery <- catalog.Snapshot.discovery;
   p.discovery_digest <- catalog.discovery_digest;
   p.discovery_config <- Some (Store.config_digest config);

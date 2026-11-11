@@ -1,6 +1,10 @@
 (library
  (name test_initialization)
- (modules test_initialization test_project_discovery test_simulation_setup)
+ (modules
+  test_config_migration
+  test_initialization
+  test_project_discovery
+  test_simulation_setup)
  (libraries
   core
   core_unix

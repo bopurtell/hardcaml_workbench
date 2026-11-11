@@ -6,6 +6,7 @@ they do not create another active queue or retroactively change historical evide
 
 | Document | When to use it |
 | --- | --- |
+| [Project configuration directory](project-configuration.md) | Migrate root companion files to `.workbench/`, understand precedence and preserve identities |
 | [Workbench test refactor](workbench-test-refactor.md) | Continue organizing local tool tests, shared support, integration runners and external/example-sensitive acceptance |
 | [Cross-repository session checkpoint](../session_checkpoint.md) | Recover the PT.0–PT.8/backend/Workbench context, completed slices, paused acceptance and next decisions |
 

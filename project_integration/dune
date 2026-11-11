@@ -1,6 +1,11 @@
 (library
  (name hardcaml_workbench_project_integration)
- (libraries core hardcaml_workbench_protocol hardcaml_workbench_provider)
+ (libraries
+  core
+  core_unix
+  core_unix.filename_unix
+  hardcaml_workbench_protocol
+  hardcaml_workbench_provider)
  (preprocess
   (pps ppx_jane))
  (lint

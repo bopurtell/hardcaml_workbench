@@ -48,7 +48,7 @@ let seconds_arg =
 
 let init_command =
   Command.basic
-    ~summary:"Generate hardcaml-workbench-simulation.sexp from explicit provider inputs"
+    ~summary:"Generate .workbench/hardcaml-workbench-simulation.sexp from provider inputs"
     ~readme:(fun () ->
       sprintf
         "Validates the inputs, previews the destination and every rendered field, then\n\
@@ -122,7 +122,8 @@ let check_command =
   Command.basic
     ~summary:"Check simulation setup by running provider discovery once (no tests)"
     ~readme:(fun () ->
-      "Reads hardcaml-workbench-simulation.sexp with the daemon's strict parser and runs\n\
+      "Reads .workbench/hardcaml-workbench-simulation.sexp (or its legacy root path),\n\
+       rejecting differing dual files, with the daemon's strict parser and runs\n\
        exactly EXEC [PROVIDER_ARGS...] discover --protocol-version 1 from the project\n\
        root, bounded by the configured discovery timeout. Reports one of: not\n\
        configured, invalid configuration, discovery failure (with the provider's\n\

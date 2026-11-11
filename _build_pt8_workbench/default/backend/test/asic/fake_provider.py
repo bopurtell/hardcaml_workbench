@@ -53,8 +53,16 @@ elif args[:1] in [['lifecycle-wait'], ['lifecycle-output'], ['lifecycle-malforme
             sys.stdout.flush()
     time.sleep(30)
 elif args == ['--version', '--json']:
-    emit(dict(cli_contract=dict(version=4, capabilities=dict(
-        namedflow1=True, timing_stage1=os.path.exists('timing-capability')))))
+    capabilities = dict(namedflow1=True, timing_stage1=os.path.exists('timing-capability'))
+    metadata = dict(cli_contract=dict(version=4, capabilities=capabilities))
+    if os.path.exists('synthesis-collection-capability') or os.path.exists('inactive-synthesis-capability'):
+        capabilities['synthesis_collection1'] = dict(schema_version=1, profile='synthesis-total-tasks-v1',
+            total_container_tasks=6, fresh_only=True, acceptance=False,
+            opt_in='HARDCAML_ASIC_SYNTHESIS_TASK_LIMIT=6')
+    if os.path.exists('synthesis-collection-capability') or os.path.exists('active-synthesis-envelope'):
+        metadata['execution_envelope'] = dict(schema_version=1, profile='synthesis-total-tasks-v1',
+            total_container_tasks=6, configured_executor_max_workers=6, reduced_usable_executor_concurrency=True)
+    emit(metadata)
 elif args[:2] == ['flow', 'list']:
     if os.path.exists('fail-discovery'):
         sys.exit(1)
@@ -96,6 +104,9 @@ elif args[:1] == ['stages']:
     signal.signal(signal.SIGTERM, terminate)
     emit(envelope('stage-observation', event='observation_allocated',
                   attempt=attempt, stream_id=stream))
+    if profile == 'admission-rejected':
+        print('strict synthesis envelope requires one fresh synthesis-only stage recipe', file=sys.stderr)
+        sys.exit(2)
     if profile.startswith('exit-race'):
         for _ in range(500):
             if os.path.exists(os.path.join(attempt, 'in-flight')):
@@ -131,6 +142,21 @@ elif args[:1] == ['stages']:
     emit(envelope('stage-observation', event='observation_terminal',
                   execution_file=os.path.join(attempt, 'execution.json')))
 elif args[:2] == ['observation', 'read-updates']:
+    if os.path.basename(args[2]) == 'attempt-admission-rejected':
+        stream = option('--stream-id')
+        allocation = dict(request=dict(expected_plan_identity='a' * 64,
+            methodology_launch=dict(attempt_id=stream, expected_plan_identity='a' * 64)))
+        recipe = dict(plan=dict(schema_version=4, initial_boundary=None,
+                               stages=['synthesis', 'floorplan', 'placement']))
+        outcome = dict(status='failed', exit_code=2,
+            error='strict synthesis envelope requires one fresh synthesis-only stage recipe')
+        emit(envelope('stage-observation', 2, stream_id=stream,
+            after=int(option('--after')), cursor=3, events=[
+                envelope('stage-observation', 2, stream_id=stream, sequence=i,
+                         event=name, data=data)
+                for i, (name, data) in enumerate([
+                    ('allocated', allocation), ('planned', recipe), ('outcome', outcome)], 1)]))
+        sys.exit(0)
     stage_fixture = os.path.join(args[2], 'observation.json')
     cursor = 0
     if os.path.basename(args[2]).startswith('attempt-exit-race'):
@@ -142,6 +168,11 @@ elif args[:2] == ['observation', 'read-updates']:
                   after=int(option('--after')), cursor=cursor, events=[]))
 elif args[:2] == ['observation', 'inspect']:
     attempt = args[2]
+    if os.path.basename(attempt) == 'attempt-admission-rejected':
+        with open(os.path.join(attempt, 'inspect-called'), 'w') as out:
+            out.write('unexpected mandatory inspect')
+        print('observation inspect: missing required named preflight reference', file=sys.stderr)
+        sys.exit(2)
     stage_fixture = os.path.join(attempt, 'observation.json')
     if os.path.exists(stage_fixture):
         with open(stage_fixture) as src:
@@ -207,12 +238,17 @@ elif args[:1] == ['report']:
     if os.path.exists('revision'):
         count += 1
     boundary = 'signoff' if profile == 'terminal' else 'synthesis'
+    synthesis_collection = profile == 'terminal' and os.path.exists('synthesis-finalization')
+    if synthesis_collection:
+        boundary = 'synthesis'
     reference = dict(path=attempt, boundary=boundary, identity=str(count))
     references = [reference]
     if profile == 'terminal':
         stages = ['synthesis', 'floorplan', 'placement', 'cts', 'routing', 'signoff']
         if os.path.exists('seven-stage-finalization'):
             stages.insert(-1, 'timing')
+        if synthesis_collection:
+            stages = ['synthesis']
         references = [dict(path=os.path.join(attempt, stage) if stage != 'signoff' else attempt,
                            boundary=stage, identity=str(count))
                       for stage in stages]
@@ -237,7 +273,7 @@ elif args[:1] == ['report']:
                                            status='failed', exit_code=2)])
     if profile == 'terminal':
         stages = [ref['boundary'] for ref in references]
-        execution.update(exit_code=0, plan=dict(schema_version=(4 if os.path.exists('seven-stage-finalization') else 3), initial_boundary=None, stages=stages),
+        execution.update(exit_code=0, plan=dict(schema_version=(4 if synthesis_collection or os.path.exists('seven-stage-finalization') else 3), initial_boundary=None, stages=stages),
                          occurrences=[dict(action_key='implementation.' + stage,
                                            occurrence_id=stream + '/implementation.' + stage,
                                            status='completed', exit_code=0) for stage in stages])

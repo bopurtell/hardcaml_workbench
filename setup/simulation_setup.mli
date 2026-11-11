@@ -3,10 +3,10 @@ open Hardcaml_workbench_protocol
 
 (** Simulation provider setup assistance (WB-039).
 
-    Generates the FS2 opt-in root file [hardcaml-workbench-simulation.sexp] from explicit
-    provider inputs, and checks a configured project by running provider discovery once.
-    Provider executables and their build instructions remain project-owned: nothing here
-    builds, installs or searches [PATH] for a provider, and no test is ever launched. *)
+    Generates [.workbench/hardcaml-workbench-simulation.sexp] from explicit provider
+    inputs, and checks a configured project by running provider discovery once. Provider
+    executables and their build instructions remain project-owned: nothing here builds,
+    installs or searches [PATH] for a provider, and no test is ever launched. *)
 
 module Config = Hardcaml_workbench_project_integration.Simulation_config
 
@@ -25,7 +25,8 @@ type t
     [dune-project]). [provider_executable] must be absolute; it need not exist yet, but
     its current state is reported by {!preview}. The rendered file is required to
     round-trip through the strict {!Config.parse_string} to an equal value. Any existing
-    entry at the destination, including a dangling symlink, is an error. *)
+    entry at either the common or legacy destination, including a dangling symlink, is an
+    error. *)
 val prepare
   :  root:string
   -> provider_executable:string
@@ -82,10 +83,10 @@ module Outcome : sig
   val render : t -> string
 end
 
-(** Read the canonical [root]'s configuration with the daemon's restrictions (regular
-    file, not a symlink, at most 16 KiB, strict parser), then run exactly
-    [EXEC [ARGS...] discover --protocol-version 1] from [root] with the environment's
-    command prefix, the configured discovery timeout and the 1 MiB stdout bound, and
-    validate the output with the daemon's discovery decoder. The provider's process group
-    is killed on timeout or overflow. Never runs tests or builds. *)
+(** Resolve common or legacy configuration using the shared byte conflict rules and the
+    daemon's restrictions (regular file, not a symlink, at most 16 KiB, strict parser),
+    then run exactly [EXEC [ARGS...] discover --protocol-version 1] from [root] with the
+    environment's command prefix, the configured discovery timeout and the 1 MiB stdout
+    bound, and validate the output with the daemon's discovery decoder. The provider's
+    process group is killed on timeout or overflow. Never runs tests or builds. *)
 val check : root:string -> environment:V1.Environment_selection.t -> Outcome.t

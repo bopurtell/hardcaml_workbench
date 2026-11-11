@@ -1,6 +1,6 @@
 open! Core
 
-(** A validated initialization plan. Preparing one only reads filesystem metadata. *)
+(** A validated initialization plan. Preparation never writes files. *)
 type t
 
 (** [root] must explicitly name an existing directory directly containing a regular
@@ -8,7 +8,8 @@ type t
     the current directory; [prepare] performs no ancestor search (callers may resolve a
     root first with {!Project_discovery.discover}). The default project name is the root's
     basename. Options use the existing manifest parser's validation rules. Any existing
-    entry at the manifest path, including a dangling symlink, is an error. *)
+    entry at either legacy or common manifest path, including a dangling symlink, is an
+    error. New manifests use [.workbench/]; embedded paths remain root-relative. *)
 val prepare
   :  root:string
   -> ?project_name:string
