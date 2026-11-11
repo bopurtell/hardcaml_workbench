@@ -55,6 +55,64 @@ this backlog does not imply they are absent or already fully verified.
    coverage. The current `@test-local` excludes API/native smoke and has not itself
    been verified as a concurrent resource-bounded aggregate.
 
+## Workbench-owned real-tool regression specimens
+
+**Owner-requested backlog addition, 2026-11-11; deferred, not activated.** Expand
+full-tool regression coverage using one or a small set of self-contained ASIC
+specimens owned by Workbench. A Workbench checkout must be testable without
+`hardcaml_asic_example` existing alongside it or supplying private setup helpers.
+
+### Ownership and scope
+
+- Keep specimen source, project declarations, required verification inputs and
+  fixture-specific expectations within the Workbench repository. Choose small
+  representative designs for concrete tool contracts rather than duplicating the
+  entire example project or creating an exhaustive design/endpoint cross-product.
+- Keep orchestration, HTTP/PTY clients, provenance handling and receipt validation
+  in Workbench-owned test support. Remove implicit requirements such as a consumer's
+  `scripts/workbench_git.py` from the generic runner.
+- Exercise real source build/emission, simulation where applicable, fresh physical
+  prefixes through signoff, result/report inspection, and retained-state reopening.
+  Include meaningful rejection/failure/cancellation cases and exact stage-stop checks.
+- Declare compiler, installed ASIC provider/SDK, EDA tools and PDK as explicit
+  external dependencies. Independence from a sibling source checkout does not imply
+  vendoring those tools or claiming dependency-free physical execution.
+- Keep actual `hardcaml_asic_example` adoption tests separate and explicitly selected.
+  They may reuse generic Workbench support, but should not supply the default tool
+  regression specimen or be a prerequisite for Workbench's own tests.
+
+### Runner and configuration experience
+
+- Reuse the existing opt-in pyramid selectors where appropriate, replacing their
+  example-coupled default setup with Workbench-owned specimens and support.
+- Separate portable specimen definitions from machine-local tool paths. Allow a
+  conventional ignored local configuration file so repeated commands need no long
+  environment-variable assignment; retain explicit config overrides.
+- Keep endpoint selection independent of machine configuration. Real EDA, signoff,
+  and full-pyramid runs remain explicit opt-in actions, excluded from ordinary
+  `runtest`/local aggregates. Full pyramids run serially under stated budgets.
+- Record which behavior each specimen establishes, actual executed results and
+  limits. A registered test or an old retained physical run is not a fresh pass.
+
+### Acceptance when activated
+
+1. In an environment where the sibling example checkout is absent, Workbench-owned
+   discovery/build and selected real-tool regressions run using only their declared
+   installed dependencies and repository-owned specimens.
+2. No generic runner imports, generated config paths or source inventories silently
+   reach into the sibling example, its `.dev` stores or its setup scripts.
+3. Document a coverage matrix linking specimens to workflow segments, physical
+   prefixes, complete journeys, failures and restart behavior; retain exact receipts.
+4. Verify default-suite exclusion even when real-tool configuration is present;
+   missing dependencies/configuration produce actionable diagnostics.
+5. Preserve external example acceptance as a distinct integration target and record
+   which expensive endpoints/full pyramids were actually executed.
+
+Current gap: `test/integration/pyramid/configure.py` reads the example's prepared
+main installation, the selected specimen is its source tree, and the runner's Git
+isolation currently consumes its dispatcher. The new pyramid provides useful real
+acceptance coverage but does not yet satisfy the repository-independence goal above.
+
 ## Acceptance when reactivated
 
 - A maintained matrix identifies coverage, gaps, ownership and exact invocation.
@@ -71,5 +129,6 @@ this backlog does not imply they are absent or already fully verified.
 
 PT.0–PT.8 means nine numbered feature entries, not nine test suites or nine physical
 stages. The authoritative ASIC phase plan and Workbench construction plan own
-completion. PT.3 consumer adoption and the paused actual-synthesis acceptance have
-distinct remaining obligations; this deferral neither closes nor launches them.
+completion. PT.3 consumer adoption remains separate. Developer synthesis/collection
+and restart acceptance has since [closed at its recorded scope](../developer_workflow_refactored_closeout.md);
+this broader regression expansion is not a prerequisite for that closeout.

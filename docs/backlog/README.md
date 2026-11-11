@@ -29,6 +29,12 @@ exploration remains deferred separately. FS1's adopted-evidence functionality is
 
 ## Tool-test flow coverage and runner consolidation
 
+Owner addition, 2026-11-11: [Workbench-owned real-tool regression specimens](tool-test-flow-coverage.md#workbench-owned-real-tool-regression-specimens)
+preserves larger full-flow/prefix suites using self-contained ASIC examples in this
+repository, without requiring a sibling `hardcaml_asic_example` checkout. Includes
+generic test-support ownership, explicit installed dependencies, local configuration
+discovery and separate external-project adoption tests. Deferred, not activated.
+
 [Deferred coverage/refactor backlog](tool-test-flow-coverage.md) preserves the
 remaining segmented and complete-flow coverage matrix, shared-support extraction,
 integration registration and bounded top-level runner. Deferred by owner on

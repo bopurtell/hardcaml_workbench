@@ -11,10 +11,12 @@ For tests **of Workbench itself**, start at [test/README.md](test/README.md) and
 and opt-in native/real-provider acceptance are distinct from hardware verification
 launched inside the application's Testing workspace.
 
-**Everyday example development:** use the [stable development session](docs/development_session.md)
-for both FIFO assertion/regression suites and PT.8 memory workloads, normal ASIC
-preparation, useful waveform Default/Fit, and retained history with explicit refresh.
-This is the recommended entry point instead of successive feature-demo sessions.
+**Everyday example development:** use the [checkout-backed main launcher](../hardcaml_asic_example/docs/workbench_main.md):
+`scripts/workbench_main.py daemon` and `client` from the example checkout. It opens
+the actual editable repository, uses persistent `.dev/workbench-main` state and
+`_flow_results/workbench` results, and exposes FIFO/PT.8 suites and normal physical
+endpoints. The older [captured development session](docs/development_session.md)
+uses an independent copied project and is historical acceptance guidance.
 
 **PT.8 Workloads (2026-11-05):** inspect verified workload results, capture explicit
 A/B variants and launch a fresh example workload through Testing. The
