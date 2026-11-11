@@ -1,4 +1,0 @@
-(lang dune 3.24)
-(name hardcaml_workbench_web)
-(sections (lib .) (doc ../../doc/hardcaml_workbench_web))
-(files (lib (META dune-package opam)) (doc (README.md)))
