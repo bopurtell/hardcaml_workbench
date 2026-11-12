@@ -78,6 +78,31 @@ Every invocation creates a new `pyramid-<id>/` directory. It retains configurati
 source/tool identities, raw UI/RPC evidence, provider reports, per-rung results and
 cleanup records. It does not update the owner's project companions or app selection.
 
+## Recover a retained cleanup interlock
+
+If a real alias reports `prior cleanup unresolved`, inspect the referenced
+`.cleanup-blocked.json` and its retained run before retrying. Do not delete the
+marker to bypass inspection. The read-only resource reconciliation command is:
+
+```sh
+python3 -B test/integration/pyramid/runner.py --reconcile-cleanup \
+  /home/wayne/devel/jane/.workbench-pyramid-execution.lock.cleanup-blocked.json
+```
+
+It requires affirmative original process/container cleanup evidence and verifies
+live absence twice under the execution lock. Only then does it archive the marker
+with a durable recovery receipt. It never launches EDA, kills processes, changes
+containers, or relabels the original failed run. If `/proc` access prevents proving
+absence, rerun this same recovery command with appropriate privileges; incomplete
+inspection leaves the interlock intact.
+
+The retained `pyramid-0ce7235feafe48248a61466479955e43` timing run exposed a runner
+parser bug for valid adjacent S-expression tokens (`created_at"..."`). The parser
+is corrected and both original failing responses parse; the provider recorded
+completion through timing, but the original harness result remains failed. Parser
+and recovery regression checks pass. Initial recovery was blocked by unreadable
+same-UID `/proc/1780/environ`; no active marker was removed on that partial check.
+
 ## Optional explicit configuration
 
 `HARDCAML_WORKBENCH_REAL_TEST_CONFIG` remains available for another installation,

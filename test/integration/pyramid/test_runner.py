@@ -381,6 +381,149 @@ class ControlledExecutionTests(unittest.TestCase):
             pass
 
 
+class SexpResponseTests(unittest.TestCase):
+    def test_compact_adjacent_atoms_with_nested_json(self):
+        runner = load_runner()
+        payload = json.dumps({"report": "(setup) says \"done\"", "line": "a\nb", "path": "a\\b"})
+        text = '(Ok((created_at"2026-11-11 09:26:32Z")(source' + runner.sexp(payload) + ')(label"Mapped cells")))'
+        self.assertEqual(runner.parse(text), ["Ok", [
+            ["created_at", "2026-11-11 09:26:32Z"], ["source", payload], ["label", "Mapped cells"]]])
+        # Exercise a response of the size that exposed the original bug.
+        text = '(Ok(' + ('(source' + runner.sexp(payload) + ')') * 20000 + '))'
+        self.assertEqual(len(runner.parse(text)[1]), 20000)
+
+    def test_invalid_quotes_and_trailing_expressions_fail_closed(self):
+        runner = load_runner()
+        for text in ('(key"unfinished)', '"unfinished', '(Ok()) garbage', '(Ok()))', '(Ok('):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                runner.parse(text)
+
+
+class CleanupRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.runner = load_runner()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = pathlib.Path(temp.name)
+        self.capture = self.root / "evidence" / ("pyramid-" + "a" * 32)
+        self.base = self.capture / "timing"
+        (self.base / "discovery").mkdir(parents=True)
+        self.lock = self.root / "execution.lock"
+        self.blocked = self.root / "execution.lock.cleanup-blocked.json"
+        self.write(self.capture / "config.json", dict(serialization_lock=str(self.lock), evidence_root=str(self.capture.parent)))
+        self.write(self.capture / "result.json", dict(status="failed", rungs=[dict(evidence=str(self.base), status="failed")]))
+        self.cleanup = dict(status="failed", cancellation_error="invalid S-expression response", process_error=None,
+                            container_error=None, remaining_processes=[], remaining_adopted_children=[], remaining_containers=[])
+        self.write(self.base / "cleanup.json", self.cleanup)
+        self.write(self.base / "effective-environment.json", dict(PATH="/usr/bin", HARDCAML_WORKBENCH_PYRAMID_OWNER="b" * 32))
+        for name in ("daemon-argv.json", "client-argv.json"):
+            self.write(self.base / name, ["never-launch"])
+        (self.base / "discovery/daemon.sexp").write_text("((pid 123))")
+        self.write(self.blocked, dict(status="cleanup_unresolved", evidence=str(self.base), cleanup_error="parse failure"))
+        self.absent = dict(processes=[], private_path_references=[], container_ids=[], owned_container_ids=[])
+
+    def write(self, path, value):
+        path.write_text(json.dumps(value))
+
+    def inventory(self):
+        return {str(p): p.read_bytes() for p in self.capture.rglob("*") if p.is_file()}
+
+    def test_cli_archives_exact_interlock_and_preserves_original_failed_evidence(self):
+        original = self.blocked.read_bytes()
+        before = self.inventory()
+        with mock.patch.object(sys, "argv", ["runner.py", "--reconcile-cleanup", str(self.blocked)]), \
+                mock.patch.object(self.runner, "recovery_resources", return_value=self.absent) as check, \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("launch")), \
+                mock.patch.object(self.runner, "Rung", side_effect=AssertionError("rung")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.runner.main()
+        self.assertEqual(check.call_count, 2)
+        self.assertFalse(self.blocked.exists())
+        archive, = self.root.glob("*.recovery-*")
+        self.assertEqual((archive / "original-interlock.json").read_bytes(), original)
+        receipt = json.loads((archive / "recovery.json").read_text())
+        self.assertEqual(receipt["status"], "cleared")
+        self.assertEqual(receipt["original_status"], "failed")
+        self.assertEqual(receipt["eda_launches"], 0)
+        self.assertEqual(receipt["processes_signalled"], 0)
+        self.assertEqual(before, self.inventory())
+
+    def test_live_or_ambiguous_resources_and_query_failure_retain_blocker(self):
+        original = self.blocked.read_bytes()
+        cases = [dict(self.absent, **{key: ["present"]})
+                 for key in ("processes", "private_path_references", "owned_container_ids")]
+        for value in [*cases, PermissionError("cannot inspect"), subprocess.TimeoutExpired("docker", 15)]:
+            patch = dict(side_effect=value) if isinstance(value, Exception) else dict(return_value=value)
+            with self.subTest(value=value), mock.patch.object(self.runner, "recovery_resources", **patch), \
+                    self.assertRaises((ValueError, PermissionError, subprocess.TimeoutExpired)):
+                self.runner.reconcile_cleanup(self.blocked)
+            self.assertEqual(self.blocked.read_bytes(), original)
+            self.assertEqual(list(self.root.glob("*.recovery-*")), [])
+
+    def test_second_check_detects_new_resource(self):
+        with mock.patch.object(self.runner, "recovery_resources", side_effect=[self.absent, dict(self.absent, processes=["new"])]), \
+                self.assertRaisesRegex(ValueError, "resources remain"):
+            self.runner.reconcile_cleanup(self.blocked)
+        self.assertTrue(self.blocked.exists())
+
+    def test_incomplete_original_cleanup_cannot_be_reconciled(self):
+        for key, value in (("process_error", "failed"), ("remaining_adopted_children", [123]),
+                           ("remaining_containers", ["old"]), ("remaining_processes", [123])):
+            self.write(self.base / "cleanup.json", dict(self.cleanup, **{key: value}))
+            with self.subTest(key=key), mock.patch.object(self.runner, "recovery_resources") as check, \
+                    self.assertRaisesRegex(ValueError, "absence proof"):
+                self.runner.reconcile_cleanup(self.blocked)
+            check.assert_not_called()
+            self.assertTrue(self.blocked.exists())
+
+    def test_execution_lock_prevents_reconciliation(self):
+        with self.runner.locked(self.lock, 1), mock.patch.object(self.runner, "recovery_resources") as check, \
+                self.assertRaisesRegex(ValueError, "lock timeout"):
+            self.runner.reconcile_cleanup(self.blocked)
+        check.assert_not_called()
+        self.assertTrue(self.blocked.exists())
+
+    def test_docker_inspection_is_read_only_and_selects_only_private_mounts(self):
+        ids = ["a" * 64, "b" * 64]
+        containers = [dict(Id=ids[0], Mounts=[dict(Source=str(self.base / "results"))]),
+                      dict(Id=ids[1], Mounts=[dict(Source=str(self.root / "unrelated"))])]
+        env = dict(PATH="/usr/bin", HARDCAML_WORKBENCH_PYRAMID_OWNER="b" * 32)
+        replies = [mock.Mock(stdout="\n".join(ids)), mock.Mock(stdout=json.dumps(containers))]
+        with mock.patch.object(self.runner, "owned_processes", return_value=[]), \
+                mock.patch.object(self.runner.shutil, "which", return_value="/usr/bin/docker"), \
+                mock.patch.object(subprocess, "run", side_effect=replies) as query:
+            proof = self.runner.recovery_resources(self.base, env)
+        self.assertEqual(proof["owned_container_ids"], ids[:1])
+        self.assertEqual([c.args[0] for c in query.call_args_list],
+                         [["/usr/bin/docker", "ps", "-aq", "--no-trunc"], ["/usr/bin/docker", "inspect", *ids]])
+
+    def test_unreadable_same_uid_capability_is_not_assumed_unrelated(self):
+        entry = mock.MagicMock()
+        entry.name = "1780"
+        entry.stat.return_value.st_uid = 1000
+        (entry / "environ").read_bytes.side_effect = PermissionError("protected")
+        proc = mock.Mock()
+        proc.iterdir.return_value = [entry]
+        with mock.patch.object(self.runner, "Path", return_value=proc):
+            with self.assertRaisesRegex(PermissionError, "same-UID PID 1780"):
+                self.runner.owned_processes("b" * 32, strict=True, owner_uid=1000)
+            # A different user's protected process cannot inherit this private
+            # user's token. Root invocations still check the evidence owner's UID.
+            entry.stat.return_value.st_uid = 2000
+            self.assertEqual(self.runner.owned_processes("b" * 32, strict=True, owner_uid=1000), [])
+
+    def test_evidence_drift_retains_original_interlock(self):
+        original = self.blocked.read_bytes()
+        def change(*args):
+            self.write(self.capture / "result.json", dict(status="changed"))
+            return self.absent
+        with mock.patch.object(self.runner, "recovery_resources", side_effect=change), \
+                self.assertRaisesRegex(ValueError, "evidence changed"):
+            self.runner.reconcile_cleanup(self.blocked)
+        self.assertEqual(self.blocked.read_bytes(), original)
+        self.assertEqual(list(self.root.glob("*.recovery-*")), [])
+
+
 class ConfigureTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

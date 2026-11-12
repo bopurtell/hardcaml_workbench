@@ -139,7 +139,15 @@ def sexp(value):
 
 
 def parse(text):
-    tokens = re.findall(r'"(?:\\.|[^"\\])*"|[()]|[^\s()]+', text)
+    # Sexplib's compact printer can omit whitespace before a quoted atom.
+    # Quotes must terminate bare atoms, including when JSON contains parentheses.
+    tokens = []
+    end = 0
+    for match in re.finditer(r'"(?:\\.|[^"\\])*"|[()]|[^\s()"]+', text):
+        require(not text[end:match.start()].strip(), "invalid S-expression token")
+        tokens.append(match[0])
+        end = match.end()
+    require(not text[end:].strip(), "invalid S-expression token")
     stack, result = [], []
     current = result
     for token in tokens:
@@ -333,9 +341,10 @@ def enabled_command(text, title):
                for segment in re.split("[│┃║]", line))
 
 
-def owned_processes(token):
+def owned_processes(token, strict=False, owner_uid=None):
     """Exact inherited capability token plus kernel PID/start identity; no argv matching."""
     result = []
+    owner_uid = os.getuid() if owner_uid is None else owner_uid
     expected = ("HARDCAML_WORKBENCH_PYRAMID_OWNER=" + token).encode()
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit(): continue
@@ -346,6 +355,11 @@ def owned_processes(token):
         except (FileNotFoundError, ProcessLookupError):
             pass
         except PermissionError:
+            try:
+                if strict and entry.stat().st_uid == owner_uid:
+                    raise PermissionError("cannot verify ownership capability for same-UID PID " + entry.name)
+            except FileNotFoundError:
+                pass
             # Different user's processes cannot inherit this private capability.
             continue
     return result
@@ -1098,6 +1112,113 @@ def verify_retained(capture):
         print("PASS retained verification only; original alias remains " + original["status"] + ": " + str(output / "verification.json"))
 
 
+def recovery_resources(base, env):
+    """Read-only absence proof. Ambiguity blocks recovery; never signal anything."""
+    token = env.get("HARDCAML_WORKBENCH_PYRAMID_OWNER", "")
+    require(re.fullmatch(r"[0-9a-f]{32}", token), "missing exact ownership capability")
+    owner_uid = base.stat().st_uid
+    processes = owned_processes(token, strict=True, owner_uid=owner_uid)
+    # Supplement capability inspection with private-path references. These are
+    # reasons to refuse, never authority to kill a process (including reused PIDs).
+    references = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if entry.stat().st_uid != owner_uid:
+                continue
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+            if any(str(base).encode() in arg for arg in argv):
+                stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                references.append(dict(pid=int(entry.name), start=stat[19], argv=[os.fsdecode(a) for a in argv if a]))
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+    docker = shutil.which("docker", path=env["PATH"])
+    require(docker, "Docker CLI required for recovery absence proof")
+    def query(*args):
+        result = subprocess.run([docker, *args], env=env, capture_output=True, text=True, timeout=15, check=True)
+        return result.stdout
+    ids = query("ps", "-aq", "--no-trunc").split()
+    require(len(ids) <= 4096 and all(re.fullmatch(r"[0-9a-f]{64}", i) for i in ids), "invalid Docker inventory")
+    containers = json.loads(query("inspect", *ids)) if ids else []
+    require({c["Id"] for c in containers} == set(ids), "incomplete Docker inspection")
+    owned = [c for c in containers if any(Path(m["Source"]).resolve().is_relative_to(base)
+             for m in c.get("Mounts", []) if m.get("Source"))]
+    return dict(processes=processes, private_path_references=references,
+                container_ids=ids, owned_container_ids=[c["Id"] for c in owned], docker=docker, owner_uid=owner_uid)
+
+
+def reconcile_cleanup(blocked):
+    """Archive only an already resource-clean interlock, under its execution lock.
+
+    Does not repair failed results, cancel work, invoke providers, or kill resources.
+    Legacy receipts without an affirmative resource-clean proof fail closed.
+    """
+    blocked = blocked.absolute()
+    suffix = ".cleanup-blocked.json"
+    require(str(blocked).endswith(suffix) and not blocked.is_symlink(), "regular cleanup interlock required")
+    lock = str(blocked)[:-len(suffix)]
+    with locked(lock, 1):
+        original = blocked.read_bytes()
+        interlock = json.loads(original)
+        require(interlock["status"] == "cleanup_unresolved", "not an unresolved cleanup interlock")
+        base = Path(interlock["evidence"]).resolve(strict=True)
+        capture = base.parent
+        config = json.loads((capture / "config.json").read_text())
+        require(Path(config["serialization_lock"]).resolve() == Path(lock).resolve(), "interlock/config lock mismatch")
+        require(capture.parent == Path(config["evidence_root"]).resolve() and
+                re.fullmatch(r"pyramid-[0-9a-f]{32}", capture.name) and base.name in ENDPOINTS,
+                "not a private rung under configured evidence_root")
+        result = json.loads((capture / "result.json").read_text())
+        require(result["status"] == "failed" and any(r.get("evidence") == str(base) and r["status"] == "failed"
+                for r in result["rungs"]), "missing original failed rung")
+        cleanup = json.loads((base / "cleanup.json").read_text())
+        require(cleanup["process_error"] is None and cleanup["container_error"] is None and
+                cleanup["remaining_processes"] == [] and cleanup["remaining_adopted_children"] == [] and
+                cleanup["remaining_containers"] == [], "original cleanup lacks resource absence proof")
+        env = json.loads((base / "effective-environment.json").read_text())
+        paths = [blocked, capture / "config.json", capture / "result.json", base / "cleanup.json",
+                 base / "effective-environment.json", base / "daemon-argv.json", base / "client-argv.json",
+                 base / "discovery/daemon.sexp"]
+        before = {str(p): digest(p) for p in paths}
+        checks = []
+        for _ in range(2):
+            check = recovery_resources(base, env)
+            checks.append(check)
+            require(not check["processes"] and not check["private_path_references"] and not check["owned_container_ids"],
+                    "live or ambiguous private resources remain; interlock retained: " + str(check))
+        require(before == {str(p): digest(p) for p in paths}, "recovery evidence changed during inspection")
+        archive = blocked.parent / (blocked.name + ".recovery-" + uuid.uuid4().hex)
+        archive.mkdir(mode=0o700)
+        receipt = dict(status="verified_absent", operation="archive stale cleanup interlock only",
+                       timestamp=datetime.now().astimezone().isoformat(), evidence=str(base),
+                       original_status=result["status"], original_sha256=before, resource_checks=checks,
+                       runner_sha256=digest(__file__), invocation=sys.argv, eda_launches=0,
+                       processes_signalled=0, containers_mutated=0, active_interlock=str(blocked),
+                       archived_interlock=str(archive / "original-interlock.json"))
+        save(archive / "recovery.json", receipt)
+        # Persist the proof before the explicit atomic move clears the blocker.
+        def sync(path, directory=False):
+            fd = os.open(path, os.O_RDONLY | (os.O_DIRECTORY if directory else 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        sync(archive / "recovery.json")
+        sync(archive, directory=True)
+        sync(archive.parent, directory=True)
+        require(blocked.read_bytes() == original, "interlock changed before archive")
+        blocked.rename(archive / "original-interlock.json")
+        sync(archive, directory=True)
+        sync(archive.parent, directory=True)
+        receipt["status"] = "cleared"
+        save(archive / "recovery.json", receipt)
+        sync(archive / "recovery.json")
+        sync(archive, directory=True)
+        print("CLEARED stale cleanup interlock; original failure retained. Receipt: " + str(archive / "recovery.json"))
+        return archive
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -1106,12 +1227,16 @@ def main():
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--preflight-only", action="store_true", help="read-only setup validation; no locks, builds, providers, or EDA")
     mode.add_argument("--verify-retained", type=Path, metavar="CAPTURE", help="read-only observation/report verification; never relaunch or change original status")
+    mode.add_argument("--reconcile-cleanup", type=Path, metavar="INTERLOCK", help="verify resource absence and archive a stale cleanup interlock; no EDA or resource termination")
     parser.add_argument("--config", default=os.environ.get("HARDCAML_WORKBENCH_REAL_TEST_CONFIG", ""))
     parser.add_argument("--daemon", type=Path, help="prebuilt daemon; required with an explicit config, including --preflight-only")
     parser.add_argument("--client", type=Path, help="prebuilt client; required with an explicit config, including --preflight-only")
     args = parser.parse_args()
     if args.self_test:
         self_test()
+        return
+    if args.reconcile_cleanup:
+        reconcile_cleanup(args.reconcile_cleanup)
         return
     if args.verify_retained:
         verify_retained(args.verify_retained)
