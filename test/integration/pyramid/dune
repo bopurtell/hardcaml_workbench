@@ -106,7 +106,7 @@
 
 (rule
  (alias runtest)
- (deps (sandbox always) test_runner.py runner.py resolve.py configure.py dune ../../../dune ../../dune)
+ (deps (sandbox always) test_runner.py runner.py resolve.py configure.py configure_private.py dune ../../../dune ../../dune)
  (action
   (progn
    (run timeout 30s python3 -B %{dep:test_runner.py} -v)

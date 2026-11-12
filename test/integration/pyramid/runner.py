@@ -9,6 +9,8 @@ Configuration is JSON, schema_version=1. Required keys:
  environment (explicit complete environment, including PATH),
  flow, profile, assignments (string list).
 Optional: sdk_identity_files (absolute installed SDK/provider receipt paths),
+ project_name (private generic manifest name; no project driver),
+ verify_reopen (false; same-store daemon and PTY reopen for one physical rung),
  endpoint_timeouts (seconds by endpoint), preparation_timeout (600),
  stage_timeout (7200), startup_timeout (120), rpc_timeout (30), lock_timeout (120),
  outer_build_lock (absolute Workbench build lock; must differ from build_lock).
@@ -78,7 +80,7 @@ def validate_config(value):
     required = {"schema_version", "evidence_root", "serialization_lock", "build_lock", "source_closure",
                 "project", "build_target", "provider", "dune", "toolchain", "python", "support_tools",
                 "pdk_root", "environment", "flow", "profile", "assignments"}
-    optional = {"sdk_identity_files", "endpoint_timeouts", "preparation_timeout", "stage_timeout", "startup_timeout", "rpc_timeout", "lock_timeout", "outer_build_lock"}
+    optional = {"sdk_identity_files", "endpoint_timeouts", "preparation_timeout", "stage_timeout", "startup_timeout", "rpc_timeout", "lock_timeout", "outer_build_lock", "project_name", "verify_reopen"}
     require(isinstance(value, dict), "configuration must be an object")
     require(required <= value.keys(), "missing configuration keys: " + str(sorted(required - value.keys())))
     require(not value.keys() - required - optional, "unknown configuration keys: " + str(sorted(value.keys() - required - optional)))
@@ -105,6 +107,9 @@ def validate_config(value):
     env = value["environment"]
     require(isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, str) and "\0" not in k + v and "=" not in k for k, v in env.items()), "invalid environment")
     require(bool(env.get("PATH")), "explicit environment.PATH required")
+    require(isinstance(value.get("project_name", "project"), str) and bool(value.get("project_name", "project").strip()),
+            "project_name must be nonempty text")
+    require(type(value.get("verify_reopen", False)) is bool, "verify_reopen must be boolean")
     require(not any(k in env for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")),
             "global Git repository selectors are forbidden; source contexts are scoped")
     require(isinstance(value.get("sdk_identity_files", []), list) and
@@ -116,7 +121,7 @@ def validate_config(value):
         require(Path(value["outer_build_lock"]) != Path(value["build_lock"]), "outer_build_lock and build_lock must differ to prevent deadlock")
     times = value.get("endpoint_timeouts", {})
     require(isinstance(times, dict) and set(times) <= set(ENDPOINTS), "unknown endpoint timeout")
-    for key, seconds in {**times, **{k: value[k] for k in optional - {"endpoint_timeouts", "sdk_identity_files", "outer_build_lock"} if k in value}}.items():
+    for key, seconds in {**times, **{k: value[k] for k in optional - {"endpoint_timeouts", "sdk_identity_files", "outer_build_lock", "project_name", "verify_reopen"} if k in value}}.items():
         require(type(seconds) in (int, float) and 0 < seconds < float("inf"), "positive finite timeout required: " + key)
     return value
 
@@ -181,6 +186,20 @@ def field(record, key):
         if isinstance(entry, list) and len(entry) == 2 and entry[0] == key:
             return entry[1]
     raise ValueError("missing typed field: " + key)
+
+
+def durable_workflow(workflow):
+    """Job handles belong to the daemon instance, unlike retained run identities.
+
+    Asic_service.load clears precisely these two fields. Compare every other
+    field (including intent, prepared byte digests, references and timestamps).
+    """
+    return [entry for entry in workflow if entry[0] not in ("build_job", "emission_job")]
+
+
+def private_manifest(project_name):
+    """Generic manifest avoids adopting a copied source's unrelated project driver."""
+    return '(lang hardcaml-workbench 1)\n' + sexp(["project", ["name", project_name]]) + '\n(dune)\n'
 
 
 def validate_journal(records, prefix, stream_id, emission_finished=None, artifacts=None):
@@ -597,6 +616,10 @@ class Rung:
         save(self.base / "source-identity.json", inventory)
         self.result["source_manifest_sha256"] = digest(self.base / "source-identity.json")
         require(self.root.is_dir(), "copied project missing")
+        if "project_name" in self.c:
+            manifest = self.root / "hardcaml-workbench.sexp"
+            manifest.write_text(private_manifest(self.c["project_name"]))
+            self.result["project_manifest_sha256"] = digest(manifest)
         self.docker = shutil.which("docker", path=self.env["PATH"])
         require(self.docker, "real-run cleanup admission requires Docker CLI in explicit PATH, including elaboration")
         self.containers()  # Read-only engine admission before any source producer.
@@ -685,12 +708,12 @@ class Rung:
             observed = self.command([bindir / "git", "-C", self.c[key], "rev-parse", "--show-toplevel"], key + "-git-context").strip()
             self.check(Path(observed).resolve() == Path(self.c[key]).resolve(), key + " Git remains independent of source context")
 
-    def start(self):
-        discovery = self.base / "discovery"
+    def start_daemon(self, label="daemon"):
+        discovery = self.base / ("discovery" if label == "daemon" else label + "-discovery")
         discovery.mkdir()
-        with (self.base / "daemon.log").open("wb") as log:
+        with (self.base / (label + ".log")).open("wb") as log:
             argv = [str(self.args.daemon), "--port", "0", "--discovery-dir", str(discovery), "--state-dir", str(self.base / "state")]
-            save(self.base / "daemon-argv.json", argv)
+            save(self.base / (label + "-argv.json"), argv)
             self.daemon = subprocess.Popen(argv, env=self.env, cwd=self.root, stdout=log, stderr=log, start_new_session=True)
         metadata = discovery / "daemon.sexp"
         self.wait(metadata.exists, "private daemon discovery", self.c.get("startup_timeout", 120))
@@ -698,6 +721,19 @@ class Rung:
         from urllib.parse import urlsplit
         parsed = urlsplit(self.url)
         require(parsed.hostname in ("127.0.0.1", "::1", "localhost") and parsed.port not in (None, 41735), "not a private daemon endpoint")
+
+    def open_client(self, label="client"):
+        self.master, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 55, 240, 0, 0))
+            argv = [str(self.args.client), "--connect", self.url, "--project-root", str(self.root), "--environment", "inherited"]
+            save(self.base / (label + "-argv.json"), argv)
+            self.client = subprocess.Popen(argv, cwd=self.root, env=self.env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        finally:
+            os.close(slave)
+
+    def start(self):
+        self.start_daemon()
         snap = self.rpc("Discover")
         self.check(not field(snap, "runs") and not field(snap, "workflows"), "new private state has no runs/workflows")
         self.wait(lambda: field(self.rpc(), "flows"), "installed flow discovery", self.c.get("startup_timeout", 120))
@@ -711,14 +747,7 @@ class Rung:
         staged = self.rpc("(Stage_fresh (selection %s) (elaboration_only %s) (expected_plan_identity ()))" % (sexp(selection), str(self.endpoint == "elaboration").lower()))
         self.intent_id = field(field(staged, "fresh_intent")[0], "id")
         self.selection = selection
-        self.master, slave = pty.openpty()
-        try:
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 55, 240, 0, 0))
-            argv = [str(self.args.client), "--connect", self.url, "--project-root", str(self.root), "--environment", "inherited"]
-            save(self.base / "client-argv.json", argv)
-            self.client = subprocess.Popen(argv, cwd=self.root, env=self.env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
-        finally:
-            os.close(slave)
+        self.open_client()
         self.wait(lambda: "stage checklist" in self.current_screen().lower(), "visible initialized production workspace", 120)
         workspace = self.rpc(domain="workspace")
         overview = next(w for w in field(workspace, "workspaces") if field(w, "preset") == ["overview"])
@@ -920,6 +949,89 @@ class Rung:
             # Goal is evidence, not a fabricated pass: execution acceptance does
             # not imply timing closure, DRC/LVS, or finalization acceptance.
         self.check(stamp(emission, "finished_at") <= stamp(w, "finished_at"), "emission completed before physical workflow completion")
+
+    def verify_reopen(self):
+        """Read the same run after restart; never build, emit or execute again."""
+        require(self.endpoint in PHYSICAL, "reopen requires one physical endpoint")
+        began = time.monotonic()
+        workflow = json.loads((self.base / "workflow.json").read_text())
+        run_ref = field(workflow, "run")[0]
+        reference = field(workflow, "reference")[0]
+        summaries = field(self.rpc(), "summaries")
+        before = next(s for s in summaries if field(s, "run") == run_ref)
+        stop(self.client)
+        self.client = None
+        os.close(self.master)
+        self.master = None
+        stop(self.daemon)
+        self.daemon = None
+        self.deadline = time.monotonic() + self.c.get("startup_timeout", 120) + 180
+        self.start_daemon("reopen-daemon")
+        initial = self.rpc()
+        save(self.base / "reopen-initial.json", initial)
+        kept = field(initial, "workflows")
+        self.check(len(kept) == 1 and durable_workflow(kept[0]) == durable_workflow(workflow),
+                   "reopen preserves every durable workflow field")
+        self.check(not field(kept[0], "build_job") and not field(kept[0], "emission_job"),
+                   "reopen clears daemon-instance job handles")
+        self.rpc("(Load_summary %s)" % sexp(run_ref))
+
+        def summary_with(freshness):
+            return next((s for s in field(self.rpc(), "summaries")
+                         if field(s, "run") == run_ref and field(s, "freshness") == freshness), None)
+
+        cached = self.wait(lambda: summary_with("Cached_unverified"), "honest cached reopen", 30)
+        save(self.base / "reopen-cached-summary.json", cached)
+        self.check(field(cached, "execution_file") == field(before, "execution_file") and
+                   field(cached, "plan_identity") == field(before, "plan_identity"),
+                   "cached reopen retains exact execution and plan")
+        self.rpc("(Observe %s)" % sexp(run_ref))
+        self.rpc("(Refresh %s)" % sexp(run_ref))
+        refreshed = self.wait(lambda: summary_with("Validated"), "public evidence refresh", 120)
+        save(self.base / "reopen-validated-summary.json", refreshed)
+        if "timing" in select_prefix(self.endpoint):
+            target = field(field(before, "timing_analysis")[0], "target")
+            self.check(all(field(field(s, "timing_analysis")[0], "target") == target
+                           for s in (cached, refreshed)), "reopen retains exact Timing source and producer")
+            validate_timing(field(refreshed, "timing_analysis")[0],
+                            json.loads((self.base / "report.json").read_text()),
+                            Path(field(refreshed, "execution_file")), self.base)
+        snapshot = self.rpc()
+        observed = next(r for r in field(snapshot, "runs") if field(r, "run") == run_ref)
+        self.check(field(observed, "reference") == reference and field(observed, "status") == "completed",
+                   "reopen observes exact original allocation")
+        statuses = {field(s, "id"): field(s, "status") for s in field(observed, "stages")}
+        self.check(statuses == {s: ("Completed" if s in select_prefix(self.endpoint) else "Not_requested") for s in PHYSICAL},
+                   "reopened checklist preserves exact selected prefix")
+        duplicate = self.rpc("(Launch_fresh (key %s) (intent_id %s))" %
+                             (sexp(field(workflow, "key")), sexp(field(field(workflow, "intent"), "id"))))
+        self.check(field(duplicate, "workflows") == kept and len(field(duplicate, "runs")) == 1,
+                   "same submission after restart never resubmits")
+        self.data.clear()
+        self.capture_screen = True
+        self.open_client("reopen-client")
+        painted = time.monotonic()
+
+        def visible():
+            text = self.current_screen()
+            return text if (time.monotonic() - painted >= 6 and "loading workspace" not in text.lower()
+                            and all(s in text.lower() for s in ("stage checklist", self.endpoint, "completed"))
+                            and field(run_ref, "id") in text
+                            and ("project_name" not in self.c or self.c["project_name"] in text)) else None
+
+        text = self.wait(visible, "same retained run visible in reopened real PTY", 60)
+        (self.base / "reopen-client.screen.txt").write_text(text)
+        (self.base / "reopen-client.ansi").write_bytes(self.data)
+        workspace = self.rpc(domain="workspace")
+        save(self.base / "reopen-workspace.json", workspace)
+        context = next(c for c in field(workspace, "contexts") if field(c, "id") == self.launch_context)
+        self.check(field(context, "selected_run") == [run_ref], "reopened TUI retains exact captured context selection")
+        for member in self.result["journal_source_files"]:
+            self.check(digest(member["path"]) == member["sha256"], "reopen leaves original journal bytes unchanged")
+        self.check(not field(self.rpc(), "finalizations"), "reopen does not finalize")
+        self.result["reopen"] = dict(status="passed", wall_seconds=time.monotonic() - began,
+                                     run=run_ref, reference=reference, statuses=statuses,
+                                     cached_freshness="Cached_unverified", refreshed_freshness="Validated")
 
     def close(self):
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
@@ -1259,6 +1371,8 @@ def main():
         preflight(config, args, read_only=True)
         print(json.dumps(dict(status="ready", config=config, resolved_inputs=resolved_inputs), indent=2))
         return
+    require(not config.get("verify_reopen") or args.endpoint in PHYSICAL,
+            "verify_reopen requires a single physical --endpoint (not elaboration or --pyramid)")
     interrupted = False
     def interrupt(signum, frame):
         nonlocal interrupted
@@ -1305,6 +1419,9 @@ def main():
                 try:
                     rung = Rung(config, args, directory, result["endpoint"], result)
                     rung.execute()
+                    if config.get("verify_reopen"):
+                        result["fresh_prefix_status"] = "passed"
+                        rung.verify_reopen()
                     result["status"] = "passed"
                 except BaseException:
                     result.update(status="failed", error=traceback.format_exc())

@@ -12,6 +12,10 @@ with (root / "inspection-calls").open("a") as calls:
 
 if args == ["--version", "--json"]:
     result = {"cli_contract": {"version": 4, "capabilities": {"namedflow1": True, "timing_analysis1": True}}}
+    if (root / "reinspection-capability").exists():
+        result["cli_contract"]["capabilities"]["timing_reinspection1"] = {
+            "schema_version": 1, "read_only": True, "option": "--refresh-timing",
+            "original_observation_mutated": False}
 elif args[:1] == ["report"]:
     result = json.loads((root / "report.json").read_text())
 elif args[:1] == ["observation"]:

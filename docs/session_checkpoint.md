@@ -1,5 +1,18 @@
 # Session recovery checkpoint — ASIC PT.0–PT.8 and Workbench
 
+**Normal Protemu adoption closeout, 2026-11-12:**
+[operational guide/evidence](../../hardcaml_protemu/docs/adoption-release.md) and
+[Workbench scope](protemu_installed_adoption.md). Selected tools generation
+`f88b8d44e7524aa3862fc163d2e2baec`, simulation `64971bc2ad2945ecbd1994ccb955d41f`.
+Normal installation, flows/preparation/Resources, seven actual simulation cases,
+core+RAM comparison, live cancellation and large-report typed timing reinspection
+pass. All acceptance processes are stopped. Magic's separate profile recheck passes;
+Protemu slow setup still fails (−3.0998 ns after one unchanged-hardware repair profile).
+No cycle-contract change, constraint relaxation or historical evidence rewriting.
+Use `source scripts/env.sh` and `bash scripts/workbench.sh status/daemon/client`
+from Protemu. The current local source-snapshot release includes uncommitted fixes;
+plain base revisions do not reproduce it. Owner Git publication remains separate.
+
 **PT.3 continuation:** Protemu PT.3a is now verified: public-API adoption, private
 recorded ASIC dependency and explicit Flops/Exact `program` variants with deterministic
 emission/resource proof. See [consumer evidence](../../hardcaml_protemu/docs/pt3a-adoption.md).

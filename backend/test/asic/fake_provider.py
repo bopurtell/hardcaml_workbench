@@ -26,8 +26,13 @@ def envelope(contract, version=1, **fields):
 
 
 def plan():
-    return envelope('methodology-plan', plan_identity='a' * 64,
-                    bundle_identity='b' * 64)
+    value = envelope('methodology-plan', plan_identity='a' * 64,
+                     bundle_identity='b' * 64)
+    if (option('--profile') or '').startswith('sram-'):
+        value['bundle_manifest'] = json.dumps(dict(operation='Hardening', macro_contract=dict(
+            schema_version=2, execution='fresh_full', macros=[dict(
+                module='RM_IHPSG13_1P_256x16_c2_bm_bist', physical_intent=dict(orientation='R0'))])))
+    return value
 
 
 if args == ['lifecycle-exit']:
@@ -54,6 +59,19 @@ elif args[:1] in [['lifecycle-wait'], ['lifecycle-output'], ['lifecycle-malforme
     time.sleep(30)
 elif args == ['--version', '--json']:
     capabilities = dict(namedflow1=True, timing_stage1=os.path.exists('timing-capability'))
+    if os.path.exists('sram-capability'):
+        capabilities['sram_segmented1'] = True
+        with open(os.path.join(os.path.dirname(__file__), 'sram_scope.json')) as src:
+            capabilities['sram_segmented1_scope'] = json.load(src)
+        if os.path.exists('sram-bad-scope'):
+            capabilities['sram_segmented1_scope']['checkpoint_schema'] = 2
+        if os.path.exists('sram-revoke-count'):
+            with open('sram-revoke-count') as src:
+                count = int(src.read()) + 1
+            with open('sram-revoke-count', 'w') as out:
+                out.write(str(count))
+            if count >= 3:
+                capabilities['sram_segmented1'] = False
     metadata = dict(cli_contract=dict(version=4, capabilities=capabilities))
     if os.path.exists('synthesis-collection-capability') or os.path.exists('inactive-synthesis-capability'):
         capabilities['synthesis_collection1'] = dict(schema_version=1, profile='synthesis-total-tasks-v1',
@@ -128,7 +146,10 @@ elif args[:1] == ['stages']:
                              occurrence_id=stream + '/implementation.' + stage,
                              action_key='implementation.' + stage, status='completed',
                              exit_code=0, duration_seconds=1.0, best_effort=False,
-                             verdict=None) for stage in stages])
+                              verdict=None) for stage in stages])
+        if profile.startswith('sram-failed'):
+            execution.update(status='failed', exit_code=2)
+            execution['occurrences'][-1].update(status='failed', exit_code=2)
         method = envelope('historical-methodology', state='recorded',
                           plan_identity='a' * 64, bundle_identity='b' * 64,
                           reference=dict(attempt_id=stream))
@@ -137,10 +158,12 @@ elif args[:1] == ['stages']:
         with open(os.path.join(attempt, 'observation.json'), 'w') as out:
             json.dump(envelope('stage-observation', 2, stream_id=stream, cursor=0,
                                writer_active=False, observation_status='final',
-                               state=dict(execution, outcome=dict(status='completed', exit_code=0)),
+                               state=dict(execution, outcome=dict(status=execution['status'], exit_code=execution['exit_code'])),
                                methodology=method, execution_file=os.path.join(attempt, 'execution.json')), out)
     emit(envelope('stage-observation', event='observation_terminal',
                   execution_file=os.path.join(attempt, 'execution.json')))
+    if profile.startswith('sram-failed'):
+        sys.exit(2)
 elif args[:2] == ['observation', 'read-updates']:
     if os.path.basename(args[2]) == 'attempt-admission-rejected':
         stream = option('--stream-id')

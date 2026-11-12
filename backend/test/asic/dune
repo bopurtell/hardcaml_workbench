@@ -1,7 +1,7 @@
 (test
  (name test_asic)
  (modules test_asic)
- (deps fake_provider.py production_flow_list.json)
+ (deps fake_provider.py production_flow_list.json sram_scope.json)
  (libraries
   async
   core
@@ -42,5 +42,13 @@
  (name test_rejection)
  (modules test_rejection)
  (libraries core hardcaml_workbench_backend hardcaml_workbench_protocol)
+ (preprocess (pps ppx_jane))
+ (lint (pps ppx_js_style)))
+
+(test
+ (name test_sram_admission)
+ (modules test_sram_admission)
+ (deps sram_scope.json)
+ (libraries core hardcaml_workbench_backend hardcaml_workbench_project_integration hardcaml_workbench_protocol yojson)
  (preprocess (pps ppx_jane))
  (lint (pps ppx_js_style)))

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "profile": "stock256x16_r0_through_timing_v1",
+  "macro": "RM_IHPSG13_1P_256x16_c2_bm_bist",
+  "max_instances": 1,
+  "orientation": "R0",
+  "technology": "ihp-sg13cmos5l",
+  "bundle_macro_schema": 2,
+  "operation": "Hardening",
+  "checkpoint_schema": 3,
+  "closure_scope": "path_bound",
+  "endpoints": ["synthesis", "floorplan", "placement", "cts", "routing", "timing"],
+  "named": true,
+  "named_fresh_only": true,
+  "signoff": false,
+  "finalization": false,
+  "pt7_linked_exceptions": false,
+  "timing_scope": "ordinary_extracted_sta_not_pt7_linked_intent"
+}

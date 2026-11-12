@@ -18,6 +18,31 @@ module Analysis_target = struct
   [@@deriving bin_io, compare, equal, sexp]
 end
 
+(** Optional cache metadata carried in diagnostics, without changing wire records. *)
+module Reinspection = struct
+  type t =
+    { original : Analysis_target.t
+    ; recomputed : Analysis_target.t
+    ; observation_path : string
+    ; observation_sha256 : string
+    ; lineage_digest : string
+    ; label : string
+    }
+  [@@deriving sexp, equal]
+
+  let prefix = "[timing-reinspection-v1] "
+  let is_metadata s = String.is_prefix s ~prefix
+  let encode t = prefix ^ Sexp.to_string_mach (sexp_of_t t)
+  let of_diagnostics diagnostics =
+    match List.filter diagnostics ~f:is_metadata with
+    | [] -> None
+    | [ value ] ->
+      if String.length value > 16384 then failwith "Timing reinspection metadata budget";
+      Some (t_of_sexp (Sexp.of_string (String.drop_prefix value (String.length prefix))))
+    | _ -> failwith "Duplicate timing reinspection metadata"
+  ;;
+end
+
 module Row = struct
   type t =
     { id : string

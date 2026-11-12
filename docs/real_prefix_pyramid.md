@@ -105,6 +105,11 @@ same-UID `/proc/1780/environ`; no active marker was removed on that partial chec
 
 ## Optional explicit configuration
 
+For a different prepared consumer, including the qualified stock SRAM specimen,
+use `configure_private.py`; see [SRAM tooling qualification](sram_segmented_release.md).
+This optional route does not change the owner's main installation or automatic
+discovery. It supports a single-endpoint journey with same-store reopen checks.
+
 `HARDCAML_WORKBENCH_REAL_TEST_CONFIG` remains available for another installation,
 profile or deliberately pinned setup. A nonempty invalid override fails rather
 than falling back to automatic discovery. Historical `real-tests-v2.json` is an

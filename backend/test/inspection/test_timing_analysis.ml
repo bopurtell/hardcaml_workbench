@@ -680,6 +680,103 @@ let main () =
        String.equal p.key (Asic_inspection.analysis_index_key ~run ~target:parsed.target)
        && String.equal p.state "failed"))
     "Frozen execution source replacement accepted";
+  let%bind () = Service.shutdown service in
+  (* Explicit reinspection keeps the historical observation and upgrades only
+     the inspection target. No wire record shape changes are needed. *)
+  write "execution.json" current;
+  Out_channel.write_all source_file ~data:(Yojson.Safe.to_string prefix);
+  let original =
+    List.fold
+      [ "status", str "unavailable"; "reason", str "timing analysis: log line bound exceeded"
+      ; "duration", `Null; "producer", `Null; "corners", `List []; "metrics", `List []
+      ; "timing_goal", str "unknown" ]
+      ~init:executable_analysis ~f:(fun a (k,v) -> replace a k v)
+  in
+  let observation_file = source_file ^ ".timing-analysis.json" in
+  let original_bytes = Yojson.Safe.to_string original in
+  Out_channel.write_all observation_file ~data:original_bytes;
+  write "report.json" (replace new_report "timing_analysis" original);
+  let recomputed = replace executable_analysis "source_digest" (str (String.make 64 'd')) in
+  let lineage = obj
+    [ "mode", str "read_only_reinspection"
+    ; "original_observation", obj ["path",str observation_file; "sha256",str (Public.digest original_bytes)]
+    ; "original_analysis_digest", str analysis_digest
+    ; "original_status", str "unavailable"; "original_timing_goal", str "unknown"
+    ; "recomputed_analysis", recomputed ] in
+  let refreshed_response = new_response
+    |> fun r -> replace r "execution_sha256" (str (main_hash ()))
+    |> fun r -> replace r "analysis_digest" (str (String.make 64 'd'))
+    |> fun r -> replace r "reinspection" lineage in
+  let legacy_response = new_response
+    |> fun r -> replace r "execution_sha256" (str (main_hash ()))
+    |> fun r -> replace r "rows" (`List []) in
+  write "response.json" legacy_response;
+  let legacy_service = Service.create ~state_dir in
+  let%bind old_snapshot = settled legacy_service root (inspect_new true) in
+  require (List.is_empty (List.hd_exn old_snapshot.inspections).rows) "Old provider behavior changed";
+  require (not (List.mem (List.last_exn (inspection_calls ())) (str "--refresh-timing") ~equal:Poly.equal))
+    "Old provider received new option";
+  let%bind () = Service.shutdown legacy_service in
+  Out_channel.write_all (file "reinspection-capability") ~data:"supported";
+  write "response.json" refreshed_response;
+  let service = Service.create ~state_dir in
+  let%bind snapshot = settled service root (Refresh run) in
+  let historical = Option.value_exn (List.hd_exn snapshot.summaries).timing_analysis in
+  require (Timing.Status.equal historical.status Unavailable && Timing.Goal.equal historical.timing_goal Unknown)
+    "Original unavailable observation was changed";
+  let%bind snapshot = settled service root (inspect_new true) in
+  let refreshed_index = List.find_exn snapshot.inspections ~f:(fun i -> String.equal i.stage "timing") in
+  let refreshed_target = Option.value_exn refreshed_index.analysis in
+  require (String.equal refreshed_target.source_digest (String.make 64 'd')
+    && List.exists refreshed_index.rows ~f:(fun r -> Option.exists r.value ~f:(fun f -> Float.(f<0.)))
+    && Option.is_some (Asic_inspection.Reinspection.of_diagnostics refreshed_index.diagnostics))
+    "Reinspection failed to publish typed negative paths/new analysis target";
+  require (List.mem (List.last_exn (inspection_calls ())) (str "--refresh-timing") ~equal:Poly.equal
+    && not (List.mem (List.last_exn (inspection_calls ())) (str "--expected-digest") ~equal:Poly.equal))
+    "Refresh did not negotiate flag or incorrectly pinned old analysis digest";
+  let validate response = Backend.Asic_timing_reinspection.validate
+    ~registered ~execution_file ~execution_sha256:(main_hash ()) ~stage:"timing"
+    ~expected:(Some parsed.target) response in
+  ignore (validate refreshed_response : Asic_inspection.Reinspection.t);
+  List.iter
+    [ replace lineage "original_analysis_digest" (str hash)
+    ; replace lineage "original_status" (str "completed")
+    ; replace lineage "original_observation" (obj ["path",str observation_file; "sha256",str hash])
+    ; replace lineage "original_observation" (obj ["path",str execution_file; "sha256",str (Public.digest original_bytes)])
+    ; replace lineage "recomputed_analysis" (replace recomputed "execution_sha256" (str hash))
+    ; replace lineage "recomputed_analysis" (replace recomputed "request_sha256" (str hash))
+    ; replace lineage "recomputed_analysis" (replace recomputed "timing_goal" (str "pass"))
+    ; replace lineage "recomputed_analysis" (replace recomputed "inventory"
+        (`List (List.map (Public.list (Public.field "inventory" recomputed))
+          ~f:(fun source -> replace source "sha256" (str (String.make 64 'e'))))))
+    ; replace lineage "recomputed_analysis" (replace recomputed "source_digest" (str hash)) ]
+    ~f:(fun bad -> rejects (fun () -> validate (replace refreshed_response "reinspection" bad)));
+  rejects (fun () -> validate (replace refreshed_response "analysis_digest" (str hash)));
+  Out_channel.write_all observation_file ~data:(original_bytes ^ " ");
+  rejects (fun () -> validate refreshed_response);
+  Out_channel.write_all observation_file ~data:original_bytes;
+  let%bind snapshot = settled service root
+    (Inspect_analysis_detail {run;target=refreshed_target;source_digest=refreshed_index.source_digest;row_id="path-1"}) in
+  require (Option.is_none (List.hd_exn snapshot.inspection_details).error)
+    "Reinspection detail failed";
+  require (List.mem (List.last_exn (inspection_calls ())) (str "--refresh-timing") ~equal:Poly.equal
+    && List.mem (List.last_exn (inspection_calls ())) (str refreshed_index.source_digest) ~equal:Poly.equal)
+    "Detail omitted refresh flag/index digest fence";
+  require (Timing.equal historical (Option.value_exn (List.hd_exn snapshot.summaries).timing_analysis)
+    && String.equal original_bytes (In_channel.read_all observation_file))
+    "Reinspection changed historical summary or observation bytes";
+  let bad_detail = replace refreshed_response "reinspection" (replace lineage "original_analysis_digest" (str hash)) in
+  rejects (fun () -> Backend.Asic_timing_reinspection.validate_detail ~registered
+    ~execution_sha256:(main_hash ()) refreshed_index bad_detail);
+  let%bind () = Service.shutdown service in
+  let before = List.length (inspection_calls ()) in
+  let service = Service.create ~state_dir in
+  let%bind snapshot = settled service root (inspect_new false) in
+  require ((List.hd_exn snapshot.inspections).cached_unverified
+    && List.length (inspection_calls ()) = before
+    && Option.equal Asic_inspection.Analysis_target.equal
+      (List.hd_exn snapshot.inspections).analysis (Some refreshed_target))
+    "Reinspection cache lost lineage or reopened by running provider";
   let%map () = Service.shutdown service in
   print_endline
     "timing analysis parser, failed-run ingestion, exact inspection, cache restart and \
@@ -847,11 +944,85 @@ let continuations routing timing signoff provider =
     "retained Routing -> Timing -> Signoff exact continuation identities validated"
 ;;
 
+let retained_refresh execution_file provider =
+  let execution_file = Filename_unix.realpath execution_file in
+  let provider = Filename_unix.realpath provider in
+  let original_bytes = Backend.Asic_evidence_file.read_bounded execution_file (8*1024*1024) in
+  let execution = Public.decode original_bytes in
+  let attempt_id = Public.text (Public.field "attempt_id" execution) in
+  let source_file = execution_file ^ ".timing-source" in
+  let source_bytes = Backend.Asic_evidence_file.read_bounded source_file (8*1024*1024) in
+  let observation_file = source_file ^ ".timing-analysis.json" in
+  let observation_bytes = Backend.Asic_evidence_file.read_bounded observation_file (1024*1024) in
+  let root = Core_unix.mkdtemp "/tmp/workbench-retained-reinspection-" |> Filename_unix.realpath in
+  let state_dir = Filename.concat root "state" in
+  Core_unix.mkdir_p state_dir ~perm:0o700;
+  let registered : Asic.Run.t =
+    {run={run with id=attempt_id}; reference={attempt=Filename.dirname
+       (Public.text (Public.field "snapshot_path" (Public.field "methodology" execution)));stream_id=attempt_id};
+     selection=None;cursor=1;status=Public.text (Public.field "status" execution);
+     execution_file=Some execution_file;error=None;stages=[];execution_timing=None} in
+  let config : Config.t =
+    {schema_version=1;project_executable=provider;provider_executable=provider;
+     results_root=Filename.concat root "results";toolchain=Filename.concat root "toolchain";
+     python=None;support_tools=None;pdk_root=None;stage_timeout_seconds=None} in
+  Out_channel.write_all (Filename.concat root Config.filename)
+    ~data:(Sexp.to_string_mach (Config.sexp_of_t config));
+  let identity = Sexp.to_string_mach [%sexp (root:string),
+    (environment:V1.Environment_selection.t),(Some config:Config.t option)] in
+  let registry = Sexp.List
+    [ [%sexp "version",(1:int)]; [%sexp "identity",(identity:string)];
+      [%sexp "runs",([registered]:Asic.Run.t list)];
+      [%sexp "submissions",([]:(string*Asic.Preview.t*string option) list)];
+      [%sexp "index",([]:(string*string) list)];
+      [%sexp "terminal_attempts",([]:(string*string) list)] ] in
+  Out_channel.write_all (Filename.concat state_dir ("asic-"^Public.digest identity^".sexp"))
+    ~data:(Sexp.to_string_mach registry);
+  let service = Service.create ~state_dir in
+  let%bind snapshot = settled service root (Load_summary registered.run) in
+  if List.is_empty snapshot.summaries then
+    raise_s [%message "Retained summary unavailable" (snapshot.operations : Asic.Pending.t list)];
+  let original = Option.value_exn (List.hd_exn snapshot.summaries).timing_analysis in
+  require (Timing.Status.equal original.status Unavailable && Timing.Goal.equal original.timing_goal Unknown)
+    "Retained original must remain unavailable/unknown";
+  let operation = Asic.Operation.Inspect_analysis {run=registered.run;target=original.target;refresh=true} in
+  let%bind snapshot = settled service root operation in
+  let index = List.find_exn snapshot.inspections ~f:(fun i -> String.equal i.stage "timing") in
+  require (List.length index.rows=193) "Retained refresh did not expose all 193 typed rows";
+  let marker = Option.value_exn (Asic_inspection.Reinspection.of_diagnostics index.diagnostics) in
+  require (String.is_substring marker.label ~substring:"completed/fail"
+    && String.is_substring marker.label ~substring:"unavailable/unknown") "Reinspection label lost lineage";
+  let row = List.find_exn index.rows ~f:(fun r ->
+    Option.equal String.equal r.corner (Some "nom_slow_1p08V_125C")
+    && Option.equal Float.equal r.value (Some (-3.099803))
+    && Option.equal String.equal r.unit_ (Some "ns")) in
+  let detail_operation = Asic.Operation.Inspect_analysis_detail
+    {run=registered.run;target=Option.value_exn index.analysis;source_digest=index.source_digest;row_id=row.id} in
+  let%bind snapshot = settled service root detail_operation in
+  let detail = List.find_exn snapshot.inspection_details ~f:(fun d -> String.equal d.row_id row.id) in
+  require (Option.is_none detail.error && String.is_substring detail.text ~substring:"-3.099803")
+    "Retained negative path detail failed";
+  require (Timing.equal original (Option.value_exn (List.hd_exn snapshot.summaries).timing_analysis)
+    && String.equal original_bytes (In_channel.read_all execution_file)
+    && String.equal source_bytes (In_channel.read_all source_file)
+    && String.equal observation_bytes (In_channel.read_all observation_file))
+    "Retained historical evidence changed";
+  Out_channel.write_all (Filename.concat root "refresh-operation.sexp")
+    ~data:(Sexp.to_string_mach (Asic.Operation.sexp_of_t operation));
+  Out_channel.write_all (Filename.concat root "detail-operation.sexp")
+    ~data:(Sexp.to_string_mach (Asic.Operation.sexp_of_t detail_operation));
+  Out_channel.write_all (Filename.concat root "snapshot.sexp")
+    ~data:(Sexp.to_string_mach (Asic.Snapshot.sexp_of_t snapshot));
+  let%map () = Service.shutdown service in
+  printf "Retained Workbench refresh: 193 typed rows, exact negative ns path/detail, original unknown unchanged. Evidence: %s\n" root
+;;
+
 let () =
   don't_wait_for
     (let%bind () =
        match Array.to_list (Sys.get_argv ()) with
-       | [ _; "--retained"; execution_file; provider ] -> retained execution_file provider
+        | [ _; "--retained"; execution_file; provider ] -> retained execution_file provider
+        | [ _; "--retained-refresh"; execution_file; provider ] -> retained_refresh execution_file provider
        | [ _; "--continuations"; routing; timing; signoff; provider ] ->
          continuations routing timing signoff provider
        | _ -> main ()

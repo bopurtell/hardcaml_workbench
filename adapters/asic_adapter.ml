@@ -129,6 +129,7 @@ let report config ~root ~environment execution_file =
 
 let inspection
   ?expected_analysis_digest
+  ?(refresh_timing = false)
   config
   ~root
   ~environment
@@ -142,6 +143,7 @@ let inspection
     ~root
     ~environment
     ([ "inspect"; execution_file; "--domain"; domain; "--stage"; stage; "--json" ]
+     @ (if refresh_timing then [ "--refresh-timing" ] else [])
      @ (if Option.is_some detail
         then []
         else

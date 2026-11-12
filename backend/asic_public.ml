@@ -99,6 +99,86 @@ let canonical_stages =
   [ "synthesis"; "floorplan"; "placement"; "cts"; "routing"; "timing"; "signoff" ]
 ;;
 
+(* A general named-flow capability says nothing about macro execution. Keep legacy
+   macro-free plans usable, while checking macro-bearing plans at the exact emitted
+   input boundary. The provider still owns collateral/physical validation. *)
+let validate_sram_selection ~metadata (selection : Asic.Selection.t) plan =
+  let manifest =
+    match field "bundle_manifest" plan with
+    | `Null -> `Null
+    | value -> decode (text value)
+  in
+  let configuration =
+    match field "configuration_bytes" plan with
+    | `Null -> field "flow_configuration" manifest
+    | value -> decode (text value)
+  in
+  let supplied name = function
+    | `Assoc fields -> List.Assoc.mem fields name ~equal:String.equal
+    | _ -> false
+  in
+  let macros = field "MACROS" configuration in
+  let manifest_macros = field "MACROS" (field "flow_configuration" manifest) in
+  if supplied "macro_contract" manifest
+     || not (Poly.equal macros `Null || Poly.equal macros (`Assoc []))
+     || not (Poly.equal manifest_macros `Null || Poly.equal manifest_macros (`Assoc []))
+  then (
+    let unsupported detail = "Unsupported SRAM segmented execution: " ^ detail in
+    require
+      (Poly.equal
+         (field "sram_segmented1" (field "capabilities" (field "cli_contract" metadata)))
+         (`Bool true))
+      (unsupported "provider does not advertise sram_segmented1=true");
+    let scope =
+      field "sram_segmented1_scope" (field "capabilities" (field "cli_contract" metadata))
+    in
+    List.iter
+      [ "schema_version", `Int 1
+      ; "profile", `String "stock256x16_r0_through_timing_v1"
+      ; "macro", `String "RM_IHPSG13_1P_256x16_c2_bm_bist"
+      ; "max_instances", `Int 1
+      ; "orientation", `String "R0"
+      ; "technology", `String "ihp-sg13cmos5l"
+      ; "bundle_macro_schema", `Int 2
+      ; "operation", `String "Hardening"
+      ; "checkpoint_schema", `Int 3
+      ; "closure_scope", `String "path_bound"
+      ; "named", `Bool true
+      ; "named_fresh_only", `Bool true
+      ; "signoff", `Bool false
+      ; "finalization", `Bool false
+      ; "pt7_linked_exceptions", `Bool false
+      ; "timing_scope", `String "ordinary_extracted_sta_not_pt7_linked_intent"
+      ; "endpoints", `List (List.map (List.take canonical_stages 6) ~f:(fun s -> `String s))
+      ]
+      ~f:(fun (key, expected) ->
+        require (Poly.equal (field key scope) expected)
+          (unsupported ("missing or incompatible sram_segmented1_scope." ^ key)));
+    require
+      (List.mem (List.take canonical_stages 6) selection.endpoint ~equal:String.equal)
+      (unsupported "only fresh prefixes through Timing are supported; macro Signoff/finalization are unsupported");
+    let contract = field "macro_contract" manifest in
+    require
+      (Poly.equal (field "schema_version" contract) (`Int 2)
+       && Poly.equal (field "execution" contract) (`String "fresh_full")
+       && Poly.equal (field "operation" manifest) (`String "Hardening"))
+      (unsupported "requires schema-2 Hardening stock SRAM physical inputs");
+    require
+      (match field "macros" contract with
+       | `List [ macro ] ->
+         Poly.equal
+           (field "module" macro)
+           (`String "RM_IHPSG13_1P_256x16_c2_bm_bist")
+         && Poly.equal (field "orientation" (field "physical_intent" macro)) (`String "R0")
+       | _ -> false)
+      (unsupported "requires exactly one stock256x16 R0 macro");
+    require
+      (List.for_all
+         [ "timing_intent"; "timing_native_coverage"; "timing_physical_qualification" ]
+         ~f:(fun key -> Poly.equal (field key manifest) `Null))
+      (unsupported "PT7 linked timing producer is unsupported"))
+;;
+
 let recipe_stages plan =
   match integer (field "schema_version" plan) with
   | 2 | 3 -> List.filter canonical_stages ~f:(fun s -> not (String.equal s "timing"))

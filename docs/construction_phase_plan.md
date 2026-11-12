@@ -5,6 +5,41 @@ It summarizes the ASIC PT.0–PT.8 track, acceptance and preservation rules
 without replacing this queue or the ASIC queue. Refactor continuation plans are
 grouped under [migration guides](migration_guides/README.md).
 
+## Status terminology for progress reports
+
+Use **complete** for a stated scope whose required implementation and acceptance
+gates passed. Use **implemented; acceptance pending** when required acceptance is
+still open, and **partial**, **blocked**, **pending**, or **deferred** with an explicit
+remaining gate or reason. Report manual/user acceptance separately where recorded.
+Do not use “delivered” as a status in new updates or summaries. Older entries below
+use it for both accepted work and implementation awaiting acceptance: consult their
+checklists and evidence rather than infer completion from that word. For PT.0–PT.8,
+follow the [authoritative ASIC status definitions](../../hardcaml_asic/docs/phase_plan.md#status-terminology)
+and preserve the distinction between completed generic scope and open Protemu work.
+
+## Normal Protemu installed adoption — 2026-11-12
+
+**Complete in bounded tooling scope:** normal local installation/environment,
+public named project flows and resource preparation, seven qualified simulation
+cases with actual VCD/UI evidence, controlled event-workload comparison, live
+serial/nested cancellation and real Protemu timing launch. A streaming collector
+fix plus explicit provenance-checked reinspection exposes retained negative paths
+without rewriting historical unavailable results. Final installed acceptance and
+independent review pass; [scope and evidence](protemu_installed_adoption.md).
+Protemu timing closure/full physical acceptance and whole-package selection remain
+open. No hardware cycle change or timing constraint relaxation was made.
+
+## Stock SRAM segmented tooling — 2026-11-12
+
+**Complete in bounded scope:** provider stock256×16/R0 segmented execution through
+Timing, path-bound schema-3 checkpoints/restarts, and Workbench capability-aware
+fresh launch/observation/reopen. Real independent example restart-chain and named
+prefix qualification pass; real production TUI launch through Timing and same-store
+restart pass. Controlled failed-timing and unsupported-capability handling pass.
+[Scope, evidence, commands and limits](sram_segmented_release.md).
+Macro Signoff/finalization/PT.7 exceptions remain unsupported. This tooling gate
+does not close Protemu's design timing/physical acceptance.
+
 ## Real-test discovery and bounded rebuild recovery — 2026-11-11
 
 Real endpoint/pyramid aliases now discover the sibling example's current prepared

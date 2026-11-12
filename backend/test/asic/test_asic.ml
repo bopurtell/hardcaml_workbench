@@ -64,15 +64,25 @@ let attach_preparation ?(on_prepare = fun () -> ()) service =
         | Preparation.Operation.Prepare
             { submission_key; selection; expected_plan_identity } ->
           on_prepare ();
-          let plan =
-            `Assoc
-              [ "contract", `String "hardcaml-asic.methodology-plan"
+           let plan =
+             `Assoc
+               ([ "contract", `String "hardcaml-asic.methodology-plan"
               ; "schema_version", `Int 1
               ; "plan_identity", `String (String.make 64 'a')
               ; "bundle_identity", `String (String.make 64 'b')
               ; "fixture_profile", `String selection.profile
               ; "fixture_endpoint", `String selection.endpoint
-              ]
+               ]
+                @ if String.is_prefix selection.profile ~prefix:"sram-"
+                  then
+                    [ "bundle_manifest", `String (Yojson.Safe.to_string
+                        (`Assoc [ "operation", `String "Hardening"
+                        ; "macro_contract", `Assoc
+                            [ "schema_version", `Int 2; "execution", `String "fresh_full"
+                            ; "macros", `List [ `Assoc
+                                [ "module", `String "RM_IHPSG13_1P_256x16_c2_bm_bist"
+                                ; "physical_intent", `Assoc [ "orientation", `String "R0" ] ] ] ] ])) ]
+                  else [])
           in
           let created_at = Timestamp.of_time_ns (Time_ns.now ()) in
           latest
@@ -1699,6 +1709,116 @@ let execution_envelope_fixtures root state_dir =
       Deferred.unit)
 ;;
 
+let sram_workflow_fixtures root state_dir =
+  let create () =
+    let service = Service.create ~state_dir:(state_dir ^ "-sram") in
+    attach_preparation service;
+    service
+  in
+  let service = create () in
+  let marker name = Filename.concat root name in
+  let enable name = Out_channel.write_all (marker name) ~data:"" in
+  let disable name =
+    if Poly.equal (Sys_unix.file_exists (marker name)) `Yes then Core_unix.unlink (marker name)
+  in
+  let selection profile endpoint = { (selection profile) with endpoint } in
+  let launch service key endpoint =
+    let%bind staged = handle service root
+      (Stage_fresh { selection = selection key endpoint; elaboration_only = false; expected_plan_identity = None }) in
+    settled service root (Launch_fresh { key; intent_id = (Option.value_exn staged.fresh_intent).id })
+  in
+  let workflow snapshot key = List.find_exn snapshot.Asic.Snapshot.workflows ~f:(fun w -> String.equal w.key key) in
+  Monitor.protect
+    ~finally:(fun () ->
+      List.iter [ "sram-capability"; "timing-capability"; "sram-bad-scope"; "sram-revoke-count" ] ~f:disable;
+      Service.shutdown service)
+    (fun () ->
+      enable "timing-capability";
+      let%bind unsupported = launch service "sram-old-provider" "timing" in
+      let denied = workflow unsupported "sram-old-provider" in
+      require (Asic.Fresh.Phase.equal denied.phase Failed && Option.is_none denied.run
+               && Option.value_map denied.error ~default:false ~f:(fun e -> String.is_substring e ~substring:"sram_segmented1"))
+        "Old provider allocated a macro execution";
+      let%bind count = launches root "sram-old-provider" in
+      require (count = 0) "Unsupported macro plan reached stages";
+      let%bind planned = settled service root (Plan (selection "sram-preview" "synthesis")) in
+      require (Option.is_none planned.preview
+               && List.exists planned.operations ~f:(fun op ->
+                 String.equal op.kind "plan"
+                 && Option.value_map op.error ~default:false ~f:(fun e ->
+                   String.is_substring e ~substring:"sram_segmented1")))
+        "Unsupported emitted macro plan published a usable preview";
+      enable "sram-capability";
+      enable "sram-bad-scope";
+      let%bind bad_scope = launch service "sram-bad-scope" "timing" in
+      require (Asic.Fresh.Phase.equal (workflow bad_scope "sram-bad-scope").phase Failed
+               && Option.is_none (workflow bad_scope "sram-bad-scope").run
+               && Option.value_map (workflow bad_scope "sram-bad-scope").error ~default:false
+                    ~f:(fun e -> String.is_substring e ~substring:"sram_segmented1_scope.checkpoint_schema"))
+        "Incompatible provider scope admitted";
+      let%bind count = launches root "sram-bad-scope" in
+      require (count = 0) "Incompatible provider scope reached stages";
+      disable "sram-bad-scope";
+      Out_channel.write_all (marker "sram-revoke-count") ~data:"0";
+      let%bind revoked = launch service "sram-revoked" "timing" in
+      require (Asic.Fresh.Phase.equal (workflow revoked "sram-revoked").phase Failed
+               && Option.is_none (workflow revoked "sram-revoked").run
+               && Option.is_some (workflow revoked "sram-revoked").prepared
+               && Option.value_map (workflow revoked "sram-revoked").error ~default:false
+                    ~f:(fun e -> String.is_substring e ~substring:"sram_segmented1=true"))
+        "Capability withdrawal before launch admitted";
+      let%bind count = launches root "sram-revoked" in
+      require (count = 0) "Revoked capability reached stages";
+      require (Int.of_string (In_channel.read_all (marker "sram-revoke-count")) = 3)
+        "Expected independent emission and pre-launch admission probes";
+      disable "sram-revoke-count";
+      let%bind signoff = launch service "sram-signoff" "signoff" in
+      require (Asic.Fresh.Phase.equal (workflow signoff "sram-signoff").phase Failed
+               && Option.is_none (workflow signoff "sram-signoff").run)
+        "Macro Signoff was admitted";
+      let%bind count = launches root "sram-signoff" in
+      require (count = 0) "Macro Signoff reached provider execution";
+      let%bind supported = launch service "sram-supported" "timing" in
+      let completed = workflow supported "sram-supported" in
+      require (Asic.Fresh.Phase.equal completed.phase Completed && Option.is_some completed.run)
+        "Supported SRAM Timing workflow did not complete";
+      let intent_id = completed.intent.id in
+      let%bind (_ : Asic.Snapshot.t) = settled service root (Launch_fresh { key = completed.key; intent_id }) in
+      let%bind count = launches root "sram-supported" in
+      require (count = 1) "Completed macro workflow automatically resubmitted";
+      let%bind failed = launch service "sram-failed" "timing" in
+      let failed_workflow = workflow failed "sram-failed" in
+      let failed_run = Option.value_exn failed_workflow.run in
+      let run = List.find_exn failed.runs ~f:(fun r -> String.equal r.Asic.Run.run.id failed_run.id) in
+      let timing = List.find_exn run.stages ~f:(fun s -> String.equal s.id "timing") in
+      let signoff = List.find_exn run.stages ~f:(fun s -> String.equal s.id "signoff") in
+      require (Asic.Fresh.Phase.equal failed_workflow.phase Failed
+               && Asic.Stage.Status.equal timing.status Failed
+               && not signoff.requested
+               && Asic.Stage.Status.equal signoff.status Not_requested)
+        "Failed macro Timing lost stage outcome or inferred Signoff";
+      require (String.equal (summary failed failed_run.id).completion "failed"
+               && Asic.Summary.Freshness.equal (summary failed failed_run.id).freshness Validated)
+        "Failed macro Timing did not retain a report";
+      let%bind (_ : Asic.Snapshot.t) = settled service root
+        (Launch_fresh { key = failed_workflow.key; intent_id = failed_workflow.intent.id }) in
+      let%bind count = launches root "sram-failed" in
+      require (count = 1) "Failed macro workflow resubmitted";
+      let%bind () = Service.shutdown service in
+      let reopened = create () in
+      Monitor.protect ~finally:(fun () -> Service.shutdown reopened) (fun () ->
+        let%bind (_ : Asic.Snapshot.t) = settled reopened root (Launch_fresh { key = completed.key; intent_id }) in
+        let%bind (_ : Asic.Snapshot.t) = settled reopened root (Launch_fresh { key = denied.key; intent_id = denied.intent.id }) in
+        let%bind (_ : Asic.Snapshot.t) = settled reopened root
+          (Launch_fresh { key = failed_workflow.key; intent_id = failed_workflow.intent.id }) in
+        let%bind count = launches root "sram-failed" in
+        require (count = 1) "Restart resubmitted failed macro workflow";
+        let%bind count = launches root "sram-supported" in
+        require (count = 1) "Restart resubmitted macro workflow";
+        let%map count = launches root "sram-old-provider" in
+        require (count = 0) "Restart retried rejected macro workflow"))
+;;
+
 let main () =
   let%bind () = evidence_file_fixtures () in
   declared_clock_fixtures ();
@@ -1721,6 +1841,9 @@ let main () =
       let state_dir = Filename.concat root "cache" in
       let fixture = Filename.concat root "fixture.py" in
       Out_channel.write_all fixture ~data:(In_channel.read_all "fake_provider.py");
+      Out_channel.write_all
+        (Filename.concat root "sram_scope.json")
+        ~data:(In_channel.read_all "sram_scope.json");
       Out_channel.write_all
         (Filename.concat root "production_flow_list.json")
         ~data:(In_channel.read_all "production_flow_list.json");
@@ -1751,6 +1874,7 @@ let main () =
   in
   let%bind () = stage_service_fixtures root state_dir in
   let%bind () = execution_envelope_fixtures root state_dir in
+  let%bind () = sram_workflow_fixtures root state_dir in
   (* Reaping and repeated cleanup use the same Async Process ownership record. No raw PID
      signalling or independent waitpid is involved. *)
   let%bind exited =

@@ -210,7 +210,9 @@ let semantic_prefix
         ; field "Execution SHA256" (identity i.execution_sha256)
         ]
         @ List.map (Evidence_time_view.lines ~now i) ~f:(fun line -> Metadata, line)
-        @ List.map i.diagnostics ~f:(fun diagnostic -> field "Diagnostic" diagnostic)
+         @ List.filter_map i.diagnostics ~f:(fun diagnostic ->
+           if Asic_inspection.Reinspection.is_metadata diagnostic then None
+           else Some (field "Diagnostic" diagnostic))
     in
     [ field "Run" (identity t.run.id)
     ; field "Domain" (t.domain ^ " · Stage: " ^ t.stage)
@@ -311,8 +313,13 @@ let rows
           t.stage
           (if index.cached_unverified then " · CACHED UNVERIFIED" else " · observed cache")
           (if index.truncated then " · TRUNCATED" else "")
-    in
-    let status =
+     in
+     let status =
+       Option.value_map t.index ~default:status ~f:(fun index ->
+         Option.value_map (Asic_inspection.Reinspection.of_diagnostics index.diagnostics)
+           ~default:status ~f:(fun r -> r.label ^ " · " ^ status))
+     in
+     let status =
       Option.value_map
         (Option.first_some t.error t.pending_error)
         ~default:status
@@ -1015,5 +1022,41 @@ let%test_unit "WB-006: evidence times keep their meanings through refresh, cache
   assert (
     has
       (rows ~now:later ~pane:Context ~scroll:0 ~width:400 ~height:100 after)
-      "2026-10-19 15:29 UTC (2m ago)")
+       "2026-10-19 15:29 UTC (2m ago)")
+;;
+
+let%test_unit "explicit reinspection hydrates original-target Timing view and visibly preserves historical unknown" =
+  let module W = Asic_inspection in
+  let run = Fs0_fixture.run_a in
+  let original : W.Analysis_target.t =
+    {attempt_id=run.id;occurrence_id=run.id^"/implementation.timing";
+     analysis_id=run.id^"/post-pnr-sta";source_digest=String.make 64 'a';
+     execution_sha256=String.make 64 'b';stage="timing";execution_file=Some "/run/execution.json.timing-source"} in
+  let recomputed = {original with source_digest=String.make 64 'c'} in
+  let label = "Reinspection recomputed completed/fail; original unavailable/unknown unchanged" in
+  let metadata : W.Reinspection.t =
+    {original;recomputed;observation_path="/run/execution.json.timing-source.timing-analysis.json";
+     observation_sha256=String.make 64 'd';lineage_digest=String.make 64 'e';label} in
+  let index : W.Index.t =
+    {run;execution_file="/run/execution.json";execution_sha256=String.make 64 'f';
+     domain="timing";stage="timing";source_digest=String.make 64 '1';
+     rows=List.init 193 ~f:(fun i : W.Row.t ->
+       {id=Int.to_string i;category="timing_path";producer="STA";
+        corner=Some "nom_slow_1p08V_125C";group=Some "clk";name="actual retained path";
+        value=Some (-3.099803);unit_=Some "ns";status="violated";source="{}";fields=[]});
+     diagnostics=[label;W.Reinspection.encode metadata];truncated=true;cached_unverified=false;
+     analysis=Some recomputed;times=Evidence_time.Index.empty} in
+  let initial = Inspection_view.create ~analysis:original ~run ~domain:"timing" ~stage:"timing" () in
+  let view = Inspection_view.reconcile initial {Fs0_fixture.snapshot with inspections=[index]} in
+  assert (List.length (path_items view)=193);
+  assert (Option.equal W.Analysis_target.equal view.analysis (Some recomputed));
+  let lines = rows ~pane:Paths ~scroll:0 ~width:200 ~height:20 view in
+  assert (List.exists lines ~f:(fun s -> String.is_substring s ~substring:"completed/fail"));
+  assert (List.exists lines ~f:(fun s -> String.is_substring s ~substring:"unavailable/unknown unchanged"));
+  assert (not (List.exists lines ~f:W.Reinspection.is_metadata));
+  match Inspection_view.detail_operation view ~source_digest:index.source_digest ~row_id:"0" with
+  | Inspect_analysis_detail {target;source_digest;_} ->
+    assert (W.Analysis_target.equal target recomputed);
+    assert (String.equal source_digest index.source_digest)
+  | _ -> assert false
 ;;

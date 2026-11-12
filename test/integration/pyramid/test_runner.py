@@ -228,6 +228,97 @@ def load_runner():
     return module
 
 
+class PrivateJourneyTests(unittest.TestCase):
+    def test_preparation_names_only_the_private_copy_without_adopting_driver(self):
+        from types import SimpleNamespace
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source, evidence = root / "source", root / "evidence"
+            source.mkdir()
+            evidence.mkdir()
+            owner_manifest = '(lang hardcaml-workbench 1)\n(project (name controlled_fifo_specimen))\n(dune (driver ./fifo))\n'
+            (source / "hardcaml-workbench.sexp").write_text(owner_manifest)
+            config = dict(project="consumer", project_name="SRAM qualification", environment={"PATH": "/usr/bin"},
+                source_closure=[dict(source=str(source), destination="consumer")],
+                build_target="memory/consumer.exe", provider=sys.executable, dune=sys.executable,
+                toolchain=str(root), python=sys.executable, support_tools=str(root), pdk_root=str(root),
+                build_lock=str(root / "build.lock"))
+            rung = runner.Rung(config, SimpleNamespace(), evidence, "timing", {})
+            def controlled_command(argv, label, timeout=30):
+                if label == "bootstrap-build":
+                    target = rung.root / "_build/default" / config["build_target"]
+                    target.parent.mkdir(parents=True)
+                    target.write_text("controlled executable identity; never executed")
+                return json.dumps(dict(cli_contract=dict(
+                    version=4, capabilities=dict(namedflow1=True, timing_stage1=True))))
+            with mock.patch.object(rung, "containers", return_value=[]), \
+                    mock.patch.object(runner.shutil, "which", return_value="/usr/bin/docker"), \
+                    mock.patch.object(rung, "command", side_effect=controlled_command):
+                rung.prepare()
+            self.assertEqual((source / "hardcaml-workbench.sexp").read_text(), owner_manifest)
+            private = (rung.root / "hardcaml-workbench.sexp").read_text()
+            self.assertEqual(private, runner.private_manifest("SRAM qualification"))
+            self.assertNotIn("driver", private)
+            self.assertNotIn("controlled_fifo_specimen", private)
+
+    def test_reopen_ignores_only_instance_jobs_and_rejects_durable_drift(self):
+        runner = load_runner()
+        original = [["id", "workflow"], ["intent", [["id", "intent"]]],
+                    ["prepared", [["plan_identity", "plan"], ["bundle_identity", "bundle"]]],
+                    ["run", [["id", "stream"]]], ["reference", [["attempt", "/exact/attempt"]]],
+                    ["phase", "Completed"], ["finished_at", "recorded"],
+                    ["build_job", ["old-build"]], ["emission_job", ["old-emit"]]]
+        reopened = [[k, [] if k in ("build_job", "emission_job") else v] for k, v in original]
+        self.assertEqual(runner.durable_workflow(original), runner.durable_workflow(reopened))
+        for key in ("id", "intent", "prepared", "run", "reference", "phase", "finished_at"):
+            changed = [[k, "wrong" if k == key else v] for k, v in reopened]
+            with self.subTest(key=key):
+                self.assertNotEqual(runner.durable_workflow(original), runner.durable_workflow(changed))
+
+    def test_private_manifest_selects_generic_identity_without_fixture_driver(self):
+        runner = load_runner()
+        raw = runner.private_manifest('SRAM "private" qualification')
+        forms = [runner.parse(line) for line in raw.splitlines()]
+        self.assertEqual(forms, [["lang", "hardcaml-workbench", "1"],
+                                 ["project", ["name", 'SRAM "private" qualification']], ["dune"]])
+        self.assertNotIn("driver", raw)
+        self.assertNotIn("controlled_fifo_specimen", raw)
+
+    def test_private_setup_is_parameterized_and_never_launches_tools(self):
+        import argparse
+        spec = importlib.util.spec_from_file_location("private_config", HERE / "configure_private.py")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "dune-project").write_text("(lang dune 3.22)\n")
+            libraries = root / "installed/lib"
+            libraries.mkdir(parents=True)
+            args = argparse.Namespace(source_root=source, exporter=pathlib.Path(sys.executable),
+                provider=pathlib.Path(sys.executable), dune=pathlib.Path(sys.executable),
+                python=pathlib.Path(sys.executable), toolchain=root, support_tools=root, pdk_root=root,
+                build_target="program_memory/consumer.exe", ocamlpath=str(libraries),
+                evidence_root=root / "evidence", serialization_lock=root / "execution.lock",
+                build_lock=root / "build.lock", project_name="SRAM qualification", flow="stock256-r0",
+                profile="qualification", assignment=[], identity_file=[], stage_timeout=600)
+            with mock.patch("subprocess.Popen", side_effect=AssertionError("must not launch")):
+                config, inputs = helper.derive(args)
+            self.assertEqual(config["environment"]["OCAMLPATH"], str(libraries))
+            self.assertEqual(config["project_name"], "SRAM qualification")
+            self.assertEqual(config["flow"], "stock256-r0")
+            self.assertEqual(config["profile"], "qualification")
+            self.assertTrue(config["verify_reopen"])
+            self.assertFalse(inputs["installs"])
+            self.assertFalse((source / "hardcaml-workbench.sexp").exists())
+            self.assertFalse((root / "evidence").exists())
+            args.evidence_root = source / "evidence"
+            with self.assertRaisesRegex(ValueError, "separate"):
+                helper.derive(args)
+
+
 class ControlledExecutionTests(unittest.TestCase):
     def setUp(self):
         self.runner = load_runner()
@@ -270,7 +361,7 @@ class ControlledExecutionTests(unittest.TestCase):
             for launch in launches:
                 launch.assert_not_called()
 
-    def exercise_selection(self, arguments, expected, fail=None):
+    def exercise_selection(self, arguments, expected, fail=None, fail_reopen=False):
         events = []
         prior_reports = set(self.evidence.glob("pyramid-*/result.json"))
 
@@ -287,14 +378,20 @@ class ControlledExecutionTests(unittest.TestCase):
             def close(self):
                 events.append(("close", self.endpoint))
 
+            def verify_reopen(self):
+                events.append(("reopen", self.endpoint))
+                if fail_reopen:
+                    raise ValueError("controlled rung failure")
+
         with self.cli(arguments), mock.patch.object(self.runner, "Rung", FakeRung):
-            if fail:
+            if fail or fail_reopen:
                 with self.assertRaisesRegex(ValueError, "controlled rung failure"):
                     self.runner.main()
             else:
                 self.runner.main()
         self.assertEqual(events, [(event, endpoint) for endpoint in expected
-                                  for event in ("init", "execute", "close")])
+                                  for event in (("init", "execute", "reopen", "close") if self.config.get("verify_reopen")
+                                                else ("init", "execute", "close"))])
         report_path, = set(self.evidence.glob("pyramid-*/result.json")) - prior_reports
         inputs = json.loads((report_path.parent / "resolved-inputs.json").read_text())
         self.assertEqual(inputs["mode"], "explicit")
@@ -308,6 +405,22 @@ class ControlledExecutionTests(unittest.TestCase):
                 report = self.exercise_selection(["--endpoint", endpoint], [endpoint])
                 self.assertEqual(report["status"], "passed")
                 self.assertEqual([r["endpoint"] for r in report["rungs"]], [endpoint])
+
+    def test_reopen_runs_only_after_fresh_prefix_and_always_cleans_up(self):
+        self.config["verify_reopen"] = True
+        for fail in (False, True):
+            report = self.exercise_selection(["--endpoint", "timing"], ["timing"], fail_reopen=fail)
+            self.assertEqual(report["status"], "failed" if fail else "passed")
+            self.assertEqual(report["rungs"][0]["fresh_prefix_status"], "passed")
+
+    def test_reopen_rejects_elaboration_and_pyramid_before_allocation(self):
+        self.config["verify_reopen"] = True
+        for arguments in (["--endpoint", "elaboration"], ["--pyramid"]):
+            with self.cli(arguments), mock.patch.object(self.runner, "preflight") as preflight:
+                with self.assertRaisesRegex(ValueError, "single physical"):
+                    self.runner.main()
+                preflight.assert_not_called()
+            self.assertEqual(list(self.evidence.iterdir()), [])
 
     def test_pyramid_completes_each_rung_and_cleanup_before_next(self):
         report = self.exercise_selection(["--pyramid"], ENDPOINTS)

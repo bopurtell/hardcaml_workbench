@@ -152,8 +152,11 @@ let matches_index t (index : Asic_inspection.Index.t) =
   Run_ref.equal index.run t.run
   && String.equal index.domain t.domain
   && String.equal index.stage t.stage
-  && Option.value_map t.analysis ~default:true ~f:(fun target ->
-    Option.equal Asic_inspection.Analysis_target.equal index.analysis (Some target))
+   && Option.value_map t.analysis ~default:true ~f:(fun target ->
+     Option.equal Asic_inspection.Analysis_target.equal index.analysis (Some target)
+     || Option.exists (Asic_inspection.Reinspection.of_diagnostics index.diagnostics)
+          ~f:(fun r -> Asic_inspection.Analysis_target.equal r.original target
+            && Option.equal Asic_inspection.Analysis_target.equal index.analysis (Some r.recomputed)))
 ;;
 
 let operation ?(refresh = false) t =
@@ -349,7 +352,12 @@ let reconcile t (snapshot : Asic.Snapshot.t) =
     List.find snapshot.runs ~f:(fun run -> Run_ref.equal run.Asic.Run.run t.run)
     |> Option.map ~f:(fun run -> run.reference, run.cursor, run.execution_file)
   in
-  let index = List.find snapshot.inspections ~f:(matches_index t) in
+   let index = List.find snapshot.inspections ~f:(matches_index t) in
+   let analysis =
+     match t.analysis, index with
+     | Some _, Some i when Option.is_some (Asic_inspection.Reinspection.of_diagnostics i.diagnostics) -> i.analysis
+     | _ -> t.analysis
+   in
   let digest index =
     Option.map index ~f:(fun i -> i.Asic_inspection.Index.source_digest)
   in
@@ -425,7 +433,7 @@ let reconcile t (snapshot : Asic.Snapshot.t) =
            then Some (key ^ ": " ^ op.state)
            else None)))
   in
-  normalize { t with observation; detail; pending_error }
+   normalize { t with analysis; observation; detail; pending_error }
 ;;
 
 let cycle_axis t axis =
@@ -470,7 +478,8 @@ let build_detail_lines ?(now = Time_ns.now ()) (t : t) ~width =
          then [ "CACHED UNVERIFIED — explicit refresh required" ]
          else [])
       @ (if i.truncated then [ "Index truncated by provider" ] else [])
-      @ List.map i.diagnostics ~f:(fun d -> "Diagnostic: " ^ d))
+      @ List.filter_map i.diagnostics ~f:(fun d ->
+        if Asic_inspection.Reinspection.is_metadata d then None else Some ("Diagnostic: " ^ d)))
   in
   let row =
     List.find (visible t) ~f:(fun r ->
@@ -877,7 +886,8 @@ let rows ?(now = Time_ns.now ()) ~width ~height t =
                "Clock/name | Value/unit | Status | Producer/corner/group | Reported \
                 fields · "
              else "")
-            (String.concat ~sep:"; " i.diagnostics)
+             (String.concat ~sep:"; " (List.filter i.diagnostics
+               ~f:(fun d -> not (Asic_inspection.Reinspection.is_metadata d))))
         ]
         @ (List.drop rows (pos / viewport * viewport)
            |> Fn.flip List.take viewport

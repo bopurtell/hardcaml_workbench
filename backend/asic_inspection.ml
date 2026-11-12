@@ -229,7 +229,20 @@ let validate_index (index : Wire.Index.t) =
        && String.equal index.stage analysis.stage
        && (Option.is_some analysis.execution_file
            || String.equal analysis.execution_sha256 index.execution_sha256))
-      "Invalid cached analysis inspection");
+       "Invalid cached analysis inspection");
+  Option.iter (Wire.Reinspection.of_diagnostics index.diagnostics) ~f:(fun r ->
+    validate_analysis_target r.original;
+    validate_analysis_target r.recomputed;
+    validate_digest r.observation_sha256;
+    validate_digest r.lineage_digest;
+    Public.require
+      (Option.equal Wire.Analysis_target.equal index.analysis (Some r.recomputed)
+       && String.equal r.original.attempt_id r.recomputed.attempt_id
+       && String.equal r.original.execution_sha256 r.recomputed.execution_sha256
+       && Option.equal String.equal r.original.execution_file r.recomputed.execution_file
+       && String.equal r.original.stage r.recomputed.stage
+       && List.mem index.diagnostics r.label ~equal:String.equal)
+      "Invalid cached reinspection lineage");
   ignore (Public.absolute index.execution_file : string);
   Public.require (List.length index.rows <= 4096) "Inspection exceeds 4096 rows";
   Public.require
