@@ -4,7 +4,7 @@ Authorized 2026-10-28. ASIC `docs/phase_plan.md` remains the PT roadmap; Workben
 `docs/construction_phase_plan.md` tracks this implementation. This document records
 contract, ownership and acceptance, not a competing queue.
 
-**Delivered and accepted through native HTTP/PTY, 2026-10-28.** Implementation
+**Complete in bounded inspector scope; accepted through native HTTP/PTY, 2026-10-28.** Implementation
 sections below retain the agreed contract; see [closeout](#implementation-closeout)
 and the [operating guide](resource_inspector.md) for the final tested behavior.
 

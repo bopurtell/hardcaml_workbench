@@ -1,5 +1,17 @@
 # Session recovery checkpoint — ASIC PT.0–PT.8 and Workbench
 
+**PT.3 continuation:** Protemu PT.3a is now verified: public-API adoption, private
+recorded ASIC dependency and explicit Flops/Exact `program` variants with deterministic
+emission/resource proof. See [consumer evidence](../../hardcaml_protemu/docs/pt3a-adoption.md).
+PT.3b vendor-functional loader/core/system regression is also verified; see
+[functional evidence](../../hardcaml_protemu/docs/pt3b-verification.md). Next is PT.3c
+physical and final-netlist acceptance. No physical EDA was run for PT.3a/b.
+
+**PT.3c first physical attempt:** [actual-loader results and triage](../../hardcaml_protemu/docs/pt3c-physical-attempt.md).
+The routed netlist passes independent functional replay, but physical acceptance
+remains blocked by slow-corner setup (−4.0586 ns) and nine unresolved Magic markers.
+The original failed run is preserved and all owned execution resources are stopped.
+
 **Everyday launch update, 2026-11-11:** use the example's
 [checkout-backed main launcher](../../hardcaml_asic_example/docs/workbench_main.md).
 Its `daemon`/`client` commands open the actual repository and persistent local state,
@@ -50,12 +62,18 @@ not nine test suites and not the entire first-release deployment checklist.
 | PT.0 | Corrected SRAM feasibility/example evidence | Complete in revised example scope; original failures/qualifications preserved |
 | PT.1 | Supported exact SRAM backend | Required scope complete; optional timed-model PT.1d deferred |
 | PT.2 | Macro collateral and physical controls | Complete for stock256×16/R0 example fresh-full profile |
-| PT.3 | Protemu adoption/system acceptance | **Pending, separate consumer track** |
+| PT.3 | Protemu adoption/system acceptance | **PT.3a/b verified; PT.3c routed functionality passes, physical acceptance blocked** |
 | PT.4 | Resource declaration/preparation inspection | Complete in bounded library/example scope |
 | PT.5 | Requested-versus-realized reconciliation/measurements | Complete in supported retained-evidence scope |
-| PT.6 | Workbench Resources inspector | Delivered |
+| PT.6 | Workbench Resources inspector | Complete in bounded inspector scope |
 | PT.7 | Timing intent/endpoint declarations and traceable evidence | Bounded library/example scope complete; separate physical specimen qualification passed |
 | PT.8 | Variants, verified workload/results and controlled comparisons | Bounded library/example scope complete; Protemu application/selection pending independently |
+
+**Status vocabulary:** follow the [ASIC plan's status terminology](../../hardcaml_asic/docs/phase_plan.md#status-terminology).
+Use **complete** for scope whose required implementation and acceptance gates passed;
+use **implemented; acceptance pending** when required acceptance remains open.
+Do not use “delivered” as a completion status. Scope limits do not make completed
+work partial; PT.7/PT.8's separate open Protemu obligations must remain explicit.
 
 No PT.9 has been adopted. Generic completion does not prove Protemu correctness,
 timing adequacy or best configuration. Historical **ASIC P6** installation/source-
@@ -63,7 +81,7 @@ artifact identity/dependency/provisioning/independent-installation obligations r
 open at their recorded scope; see the link in the active ASIC plan. Don't confuse
 ASIC P6 with PT.6 or Workbench feature-set numbers.
 
-## 3. Delivered user-facing integration after PT.8
+## 3. Completed user-facing integration after PT.8
 
 The initial PT.8-only demos were consolidated into one stable development launcher:
 

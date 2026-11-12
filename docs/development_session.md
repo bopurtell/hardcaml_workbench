@@ -17,12 +17,16 @@ sessions, configurations and evidence remain intact.
 The ASIC PT.0–PT.8 track is nine numbered entries (including PT.0), not a complete
 first-release/deployment checklist. The authoritative
 [ASIC phase plan](../../hardcaml_asic/docs/phase_plan.md) marks PT.0–PT.2 and
-PT.4–PT.8 complete/delivered in their supported library/example scopes. **PT.3
-Protemu adoption stays pending independently**, including consumer-specific system,
-timing and configuration-selection acceptance. No Protemu acceptance follows from
-this example session, and no PT.9 has been adopted.
+PT.4–PT.8 complete in their supported library/example scopes. **PT.3 remains partial:
+PT.3a/b are complete; PT.3c routed functional replay passes, but physical acceptance
+is blocked.** PT.7 consumer timing review and PT.8 Protemu configuration selection
+remain separate open obligations. No Protemu acceptance follows from this example
+session, and no PT.9 has been adopted. Follow the
+[phase plan's status terminology](../../hardcaml_asic/docs/phase_plan.md#status-terminology):
+“complete” means required gates passed for the stated scope; implementation awaiting
+required acceptance must say so explicitly, rather than use “delivered”.
 
-The [Workbench construction plan](construction_phase_plan.md) records the delivered
+The [Workbench construction plan](construction_phase_plan.md) records the implemented
 UI/daemon integrations and remaining manual acceptance. The unified session adds
 the existing FIFO and PT.8 suites, exact result/waveform handoffs and normal ASIC
 preparation; it is not another hardware-feature phase.

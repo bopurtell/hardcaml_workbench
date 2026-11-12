@@ -190,7 +190,7 @@ and a fresh Exact workload pass. Original user session remains unchanged.
 See [review and recovery commands](standard_plan_recovery.md) and
 [independent endpoint review](pt8_endpoint_independent_review.md).
 
-## Active PT.8 workload inspection and execution — 2026-11-05
+## Completed PT.8 workload inspection and execution scope — 2026-11-05
 
 User authorized the Workbench integration of the accepted PT.8 library/example
 workflow. [Bounded plan](pt8_workloads_plan.md) owns shared APIs, exclusive slices,
@@ -205,7 +205,8 @@ live daemons remain unchanged.
 No new synthesis/P&R/STA or Protemu scope. Provider-owned verification/deltas and
 existing FS2 supervision are reused; root configuration adoption is separate.
 
-Delivered 2026-11-05: [launch/acceptance guide](pt8_workloads.md). Corrected private
+Implementation and native HTTP/PTY acceptance complete, 2026-11-05;
+user visual acceptance remains pending: [launch/acceptance guide](pt8_workloads.md). Corrected private
 session `session-final-review-01` runs immutable provider generation
 `ee3af8de9f83418b9afed9c67e473e3c`. Actual retained comparison and production-form
 fresh Exact launch, digest-pinned artifact handoff and fresh-versus-retained
@@ -215,7 +216,7 @@ were corrected. Full terminal and coordinator `@all @runtest` pass. Source/model
 trace audit and root-provider/config preservation are recorded in the guide.
 Existing live sessions remain untouched; user visual acceptance is pending.
 
-## Active PT.6 resource inspector — 2026-10-28
+## Completed PT.6 resource inspector scope — 2026-10-28
 
 Owner authorized presentation of ASIC-owned requested/selected/realized resources,
 physical measurements and sampled timing/electrical links. The
@@ -227,7 +228,7 @@ exact evidence targets, bounded queries and native retained-SRAM acceptance.
 - [x] Native synthetic and actual retained-example acceptance, independent review.
 - [x] Broader checks, matching binaries and explicit provider/restart handoff.
 
-Delivered 2026-10-28: final native bridge533, synthetic HTTP/PTY70, retained SRAM
+Complete in bounded inspector scope, 2026-10-28: final native bridge533, synthetic HTTP/PTY70, retained SRAM
 HTTP/PTY52, unified-flow99 and saved-layout17 assertions passed, along with both
 full suites. Independent peer recheck passed66 assertions after corrections.
 Importing coarse historical evidence does not create a new physical run. Owner
