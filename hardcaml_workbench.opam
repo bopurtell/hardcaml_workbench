@@ -6,8 +6,8 @@ A standalone native OCaml application for inspecting, running, measuring, and
 debugging independently owned Hardcaml projects."""
 maintainer: ["Bohdan Purtell <bohdanpurtell@gmail.com>"]
 authors: ["Bohdan Purtell <bohdanpurtell@gmail.com>"]
-homepage: "https://github.com/LeEmperor/hardcaml_workbench"
-bug-reports: "https://github.com/LeEmperor/hardcaml_workbench/issues"
+homepage: "https://github.com/bopurtell/silver"
+bug-reports: "https://github.com/bopurtell/silver/issues"
 depends: [
   "dune" {>= "3.22"}
   "ocaml" {>= "5.1"}
@@ -45,5 +45,5 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/LeEmperor/hardcaml_workbench.git"
+dev-repo: "git+https://github.com/bopurtell/silver.git"
 x-maintenance-intent: ["(latest)"]

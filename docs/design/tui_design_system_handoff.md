@@ -1,7 +1,7 @@
 # Reusable TUI Design System — Implementation Handoff
 
 ## Goal
-Build a small, composable OCaml UI foundation for terminal applications such as **Hardcaml Workbench** and **ches**. Separate *appearance*, *reusable components*, and *spatial layout* from application-specific state and behavior. Favor a consistent design vocabulary over a large widget framework.
+Build a small, composable OCaml UI foundation for terminal applications such as **Silver** and **ches**. Separate *appearance*, *reusable components*, and *spatial layout* from application-specific state and behavior. Favor a consistent design vocabulary over a large widget framework.
 
 ## Proposed structure
 
@@ -54,7 +54,7 @@ Names are illustrative; adapt to existing module conventions. Avoid implementing
 
 ## Non-goals (for now)
 
-Full IDE/window manager behavior, graphics/waveform rendering, persistence, plugin APIs, animation, and implementation of Hardcaml Workbench features. Those belong to later layers.
+Full IDE/window manager behavior, graphics/waveform rendering, persistence, plugin APIs, animation, and implementation of Silver features. Those belong to later layers.
 
 ## Design iteration contract
 

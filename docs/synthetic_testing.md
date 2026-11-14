@@ -72,7 +72,7 @@ From the checkout, using the already rebuilt normal binaries:
 **Terminal 1 — fresh demo, prepare once and start:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 mkdir -p "$HOME/.local/state/hardcaml-workbench"
 python3 -B scripts/synthetic-flow-demo.py prepare \
   --dir "$HOME/.local/state/hardcaml-workbench/synthetic-testing-demo"
@@ -83,7 +83,7 @@ python3 -B scripts/synthetic-flow-demo.py daemon \
 **Terminal 2 — seed and open:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/synthetic-flow-demo.py seed \
   --dir "$HOME/.local/state/hardcaml-workbench/synthetic-testing-demo"
 python3 -B scripts/synthetic-flow-demo.py client \
@@ -115,14 +115,14 @@ build and verified again. Stop/restart an older demo daemon/client to load them.
 **Terminal 1:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py daemon
 ```
 
 **Terminal 2:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py client
 ```
 

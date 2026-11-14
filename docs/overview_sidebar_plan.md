@@ -39,7 +39,7 @@ unstaged edits only. No git add/commit/push/merge or other authorship operations
 
 ## Working rules
 
-Workspace: `/home/wayne/devel/jane/hardcaml_workbench`. Preserve all staged changes
+Workspace: `/home/wayne/devel/jane/silver`. Preserve all staged changes
 and live demo sessions/configuration. Read Ches at `/home/wayne/devel/ches/ui/theme.ml`
 as reference only. No real ASIC flows or sibling-source changes are expected.
 Tests use private state under `/tmp/opencode`.

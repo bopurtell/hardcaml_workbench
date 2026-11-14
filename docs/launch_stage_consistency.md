@@ -101,14 +101,14 @@ daemon normally, then restart both matching binaries:
 **Terminal1:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py daemon
 ```
 
 **Terminal2:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py client
 ```
 

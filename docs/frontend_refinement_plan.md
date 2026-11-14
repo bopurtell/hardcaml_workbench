@@ -33,7 +33,7 @@ the shared implementation plan for this request, not a reopening of FS2.
 
 ## Working rules
 
-Work in `/home/wayne/devel/jane/hardcaml_workbench`. No git add/commit/push/merge or
+Work in `/home/wayne/devel/jane/silver`. No git add/commit/push/merge or
 authorship mutations. Keep user state/configurations and live sessions untouched.
 Ches is read-only reference if needed. No real physical flow is needed; private
 synthetic/Cyclesim fixtures provide acceptance. Use `/tmp/opencode` for test state.

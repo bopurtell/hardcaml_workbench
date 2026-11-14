@@ -62,7 +62,7 @@ checks remain active. No production UI code or baseline capture was changed.
 
 ## Final results
 
-Executed serially from `/home/wayne/devel/jane/hardcaml_workbench`, under the
+Executed serially from `/home/wayne/devel/jane/silver`, under the
 parent's exclusive build/runtime grant:
 
 | Command | Actual result |

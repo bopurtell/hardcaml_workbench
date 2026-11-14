@@ -1,4 +1,4 @@
-Hardcaml Workbench | connected | http://127.0.0.1:41733                                                                 
+Silver | connected | http://127.0.0.1:41733                                                                             
 PROJECT / GENERIC DUNE WORKSPACE        |JOBS                                                                           
 Project: hardcaml_protemu_physical_em...|                                                                               
 Root: /home/wayne/de.../hardcaml_protemu|SELECTED JOB                                                                   

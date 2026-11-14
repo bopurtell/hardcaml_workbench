@@ -18,7 +18,7 @@ read-only Git status/log/diff and an installed-opam-package listing were checked
 | --- | --- | --- |
 | `/home/wayne/devel/jane/hardcaml_asic` | `031498db573949793e980f4d645c343e6b705915` | `main`, clean |
 | `/home/wayne/devel/jane/hardcaml_asic_example` | `ae6fa46caabfbd077a81152421a5cb8ecb5ae4dc` | `main`, clean |
-| `/home/wayne/devel/jane/hardcaml_workbench` | `e99221b81807648bc8ee66f8ad1e3b9d1235add3` | `oxcaml`, existing modified terminal files and untracked FS0 integration files |
+| `/home/wayne/devel/jane/silver` | `e99221b81807648bc8ee66f8ad1e3b9d1235add3` | `oxcaml`, existing modified terminal files and untracked FS0 integration files |
 
 Workbench's existing changes include `terminal/{dune,main.ml}`, ASIC adapter,
 backend/process/public/service files and tests, workspace service/protocol/tests,

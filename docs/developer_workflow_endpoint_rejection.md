@@ -40,7 +40,7 @@ Run from `hardcaml_asic_example`:
 opam exec --switch=5.2.0+ox -- python3 -B scripts/workbench_dev.py \
   --store /tmp/opencode/developer-workflow-envelope-v1-store-04 prepare \
   --refresh --apps-only \
-  --wb-build-root /home/wayne/devel/jane/hardcaml_workbench/_build_pt8_workbench \
+  --wb-build-root /home/wayne/devel/jane/silver/_build_pt8_workbench \
   --expected-daemon-sha256 7ae6e0c5804ed48f51665648a6058b9fe266c39255957a7f83493fc4a86e6621 \
   --expected-client-sha256 3d4953e6d99430a05e434a7262e81c3b3dc30c8c13f38e2339de61c15c5dab24
 ```

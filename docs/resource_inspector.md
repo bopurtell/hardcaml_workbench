@@ -135,15 +135,15 @@ cd /home/wayne/devel/jane/hardcaml_asic_example
 source .dev/asic-pt6/generations/97b85a9e25e24615b758b97b21ca9697/activate.sh
 export OCAMLPATH="$OCAMLPATH:$PWD/.dev/workbench-provider-sdk/lib"
 export DUNEJOBS=6 OPAMJOBS=6 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-/home/wayne/devel/jane/hardcaml_workbench/scripts/with-switch.sh \
-  /home/wayne/devel/jane/hardcaml_workbench/_build/default/daemon/main.exe \
+/home/wayne/devel/jane/silver/scripts/with-switch.sh \
+  /home/wayne/devel/jane/silver/_build/default/daemon/main.exe \
   --port 41735 --state-dir /tmp/opencode/workbench-pt5-Zcj6Y5
 ```
 
 Client:
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 ./scripts/with-switch.sh _build/default/terminal/main.exe \
   --connect http://127.0.0.1:41735 \
   --project-root /home/wayne/devel/jane/hardcaml_asic_example \

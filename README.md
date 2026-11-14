@@ -1,4 +1,10 @@
-# Hardcaml Workbench
+# Silver
+
+Formerly Hardcaml Workbench. The repository is now
+[`bopurtell/silver`](https://github.com/bopurtell/silver), checked out as `silver/`.
+Existing `hardcaml-workbench` commands, `hardcaml_workbench*` packages and OCaml
+modules, configuration filenames, environment variables, and saved state paths
+remain supported under their existing names.
 
 A development workbench for inspecting, running, measuring, and debugging Hardcaml designs.
 

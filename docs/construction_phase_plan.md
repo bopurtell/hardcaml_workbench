@@ -1,4 +1,4 @@
-# Hardcaml Workbench — Demo construction plan
+# Silver — Demo construction plan
 
 New-session context: [cross-repository recovery checkpoint](session_checkpoint.md).
 It summarizes the ASIC PT.0–PT.8 track, acceptance and preservation rules

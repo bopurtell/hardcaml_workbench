@@ -143,7 +143,7 @@ the caller timeout interrupted the later simulation segment. App build:
 flock /tmp/opencode/workbench-pt8-build.lock \
   opam exec --switch=5.2.0+ox -- dune build \
   --root /home/wayne/devel/jane/hardcaml_workbench \
-  --build-dir /home/wayne/devel/jane/hardcaml_workbench/_build_pt8_workbench \
+  --build-dir /home/wayne/devel/jane/silver/_build_pt8_workbench \
   -j2 daemon/main.exe terminal/main.exe
 ```
 

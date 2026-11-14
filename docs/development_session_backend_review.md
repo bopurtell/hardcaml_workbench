@@ -163,7 +163,7 @@ B's retained direct-test evidence, not a new independent OS-reaping claim.
 
 ## Exact commands and preservation
 
-From `/home/wayne/devel/jane/hardcaml_workbench`:
+From `/home/wayne/devel/jane/silver`:
 
 ```sh
 flock /tmp/opencode/workbench-pt8-build.lock \
@@ -174,7 +174,7 @@ flock /tmp/opencode/workbench-pt8-build.lock \
 
 opam exec --switch=5.2.0+ox -- python3 -B reviewdocs/backend_review/run.py \
   --evidence /tmp/opencode/development-backend-a-review-01 \
-  --cancel-probe /home/wayne/devel/jane/hardcaml_workbench/_build_pt8_workbench/default/reviewdocs/backend_review/cancellation_prefix_probe.exe
+  --cancel-probe /home/wayne/devel/jane/silver/_build_pt8_workbench/default/reviewdocs/backend_review/cancellation_prefix_probe.exe
 ```
 
 The evidence path must be new. B's invoked prepare/refresh internally uses explicit
@@ -279,7 +279,7 @@ From the Workbench checkout, switch `5.2.0+ox`:
 ```sh
 opam exec --switch=5.2.0+ox -- python3 -B reviewdocs/backend_review/run.py \
   --evidence /tmp/opencode/development-backend-a-review-02 \
-  --cancel-probe /home/wayne/devel/jane/hardcaml_workbench/_build_pt8_workbench/default/reviewdocs/backend_review/cancellation_prefix_probe.exe
+  --cancel-probe /home/wayne/devel/jane/silver/_build_pt8_workbench/default/reviewdocs/backend_review/cancellation_prefix_probe.exe
 
 opam exec --switch=5.2.0+ox -- python3 -B reviewdocs/backend_review/migration_recheck.py \
   --evidence /tmp/opencode/development-backend-a-migration-01 \

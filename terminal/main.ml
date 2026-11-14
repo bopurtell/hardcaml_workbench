@@ -3810,7 +3810,7 @@ let render_legacy session ({ Bonsai_term.Dimensions.width; height } as dimension
     then
       View.center
         (View.vcat
-           [ View.text ~attrs:[ Attr.bold ] "Hardcaml Workbench"
+           [ View.text ~attrs:[ Attr.bold ] "Silver"
            ; View.text
                (sprintf
                   "Terminal too small (%dx%d); need at least %dx%d"
@@ -3825,7 +3825,7 @@ let render_legacy session ({ Bonsai_term.Dimensions.width; height } as dimension
       let jobs = project_jobs session in
       let header =
         [ sprintf
-            "Hardcaml Workbench | %s | %s"
+            "Silver | %s | %s"
             session.status
             (Http.Client.endpoint session.client)
         ]
@@ -8284,7 +8284,7 @@ let tui session ~exit ~dimensions graph =
 
 let print_opened session =
   reconcile_selection session;
-  printf "Hardcaml Workbench\n";
+  printf "Silver\n";
   printf "Daemon: %s\n" (Http.Client.endpoint session.client);
   printf "Instance: %s\n" (V1.Daemon_instance_id.to_string session.hello.instance_id);
   List.iter (environment_lines session) ~f:print_endline;
@@ -8990,7 +8990,7 @@ let run
 
 let command =
   Command.async_or_error
-    ~summary:"Connect to Hardcaml Workbench"
+    ~summary:"Connect to Silver"
     (let%map_open.Command endpoint =
        flag "--connect" (optional string) ~doc:"URL attach without automatic startup"
      and project_root =

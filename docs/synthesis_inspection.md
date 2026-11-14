@@ -74,8 +74,8 @@ Optional paths:
 python3 scripts/test-synthesis-inspector.py \
   --source-state /tmp/opencode/workbench-fs0-91em64rl/real/state \
   --example-root /home/wayne/devel/jane/hardcaml_asic_example \
-  --client /home/wayne/devel/jane/hardcaml_workbench/_build/default/terminal/main.exe \
-  --daemon /home/wayne/devel/jane/hardcaml_workbench/_build/default/daemon/main.exe
+  --client /home/wayne/devel/jane/silver/_build/default/terminal/main.exe \
+  --daemon /home/wayne/devel/jane/silver/_build/default/daemon/main.exe
 ```
 
 Each invocation creates a new `/tmp/opencode/workbench-synthesis-inspector-*`

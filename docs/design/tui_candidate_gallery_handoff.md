@@ -83,7 +83,7 @@ For the next gallery update, show A–E on the **same Overview and Timing fixtur
 
 ## Goal
 
-Build a reusable OCaml terminal-UI foundation for **Hardcaml Workbench** and **ches**, then demonstrate several independently selectable visual styles. The user wants to see implementations before deciding defaults and expects to retain alternate styles. The immediate deliverable is a five-candidate gallery and reusable primitives around the **existing** window/workspace/tile and ches overlay mechanisms, **not** a new window manager or domain integration.
+Build a reusable OCaml terminal-UI foundation for **Silver** and **ches**, then demonstrate several independently selectable visual styles. The user wants to see implementations before deciding defaults and expects to retain alternate styles. The immediate deliverable is a five-candidate gallery and reusable primitives around the **existing** window/workspace/tile and ches overlay mechanisms, **not** a new window manager or domain integration.
 
 ### Confirmed design feedback
 
@@ -99,7 +99,7 @@ Build a reusable OCaml terminal-UI foundation for **Hardcaml Workbench** and **c
 
 ## Existing Workbench hierarchy — preserve, do not invert
 
-**Confirmed by the user:** Hardcaml Workbench is already built around this hierarchy. Do **not** model workspaces as parents of windows or treat “window” as a task-specific tile arrangement.
+**Confirmed by the user:** Silver is already built around this hierarchy. Do **not** model workspaces as parents of windows or treat “window” as a task-specific tile arrangement.
 
 ```text
 Project session                         # shared project context and services
@@ -132,7 +132,7 @@ Suggested *workspace* examples (not fixed definitions):
 - A named **workspace definition** (tile membership and semantics) must not be coupled to one visual preset. An Overview workspace might use A; Timing may use B plus D-style tabs; C must remain testable.
 - Tiles may synchronize on selected module, source location, path, or diagnostic through explicit shared context; tiles also retain appropriate local focus, scroll, and filters.
 - A `ches-mini` editor should be hosted as a reusable tile/adapter, not reimplemented in Timing; the integration boundary should carry source-navigation requests and focus/keymap ownership.
-- Any changes to actual windows, workspace lifecycle, or navigation **must follow existing Hardcaml Workbench implementations**. The design-system task should not impose a new window manager.
+- Any changes to actual windows, workspace lifecycle, or navigation **must follow existing Silver implementations**. The design-system task should not impose a new window manager.
 
 ## Core library decomposition
 

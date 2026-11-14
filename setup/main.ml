@@ -10,7 +10,7 @@ let report_error message =
 
 let command =
   Command.basic
-    ~summary:"Initialize Hardcaml Workbench in an existing Dune directory"
+    ~summary:"Initialize Silver in an existing Dune directory"
     ~readme:(fun () ->
       "Creates .workbench/hardcaml-workbench.sexp without replacing existing files.\n\
        --migrate-configs copies the four legacy configuration basenames into .workbench/,\n\

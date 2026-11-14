@@ -77,7 +77,7 @@ opam exec --switch=5.2.0+ox -- python3 -B scripts/pt8_workbench_launch.py client
 The daemon chooses an available port and publishes it in this session's discovery
 directory; the client reads that endpoint. Only one daemon should own this private
 session state. The launchers use prebuilt matching Workbench binaries in
-`hardcaml_workbench/_build_pt8_workbench/default/` and private configuration, client
+`silver/_build_pt8_workbench/default/` and private configuration, client
 state and daemon state. They do not use `.dev/asic-pt6/current`, install dependencies,
 restart another daemon or change the root example's FIFO/ASIC configurations.
 

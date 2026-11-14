@@ -81,7 +81,7 @@ are preserved and superseded by the final receipts above.
 ## Verification and binary handoff
 
 All commands used switch `5.2.0+ox`; all Dune calls explicit `-j2`, root
-`/home/wayne/devel/jane/hardcaml_workbench`, build dir `_build_pt8_workbench`, and
+`/home/wayne/devel/jane/silver`, build dir `_build_pt8_workbench`, and
 `flock /tmp/opencode/workbench-pt8-build.lock`.
 
 - `dune build … terminal/main.exe terminal/waveform_probe.exe daemon/main.exe @terminal/lint`:PASS.

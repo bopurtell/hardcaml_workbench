@@ -126,7 +126,7 @@ HTTP, digest verification and parser. It does not claim the example owner's real
 
 ## Built artifacts
 
-Relative to `/home/wayne/devel/jane/hardcaml_workbench`:
+Relative to `/home/wayne/devel/jane/silver`:
 
 | Path | SHA256 |
 | --- | --- |

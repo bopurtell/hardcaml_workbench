@@ -111,7 +111,7 @@ let run
 
 let command =
   Command.async
-    ~summary:"Run the loopback-only Hardcaml Workbench daemon"
+    ~summary:"Run the loopback-only Silver daemon"
     (let%map_open.Command port =
        flag "--port" (optional_with_default 0 int) ~doc:"PORT listen port"
      and discovery_dir =

@@ -5,7 +5,7 @@
 (generate_opam_files true)
 
 (source
- (github LeEmperor/hardcaml_workbench))
+ (github bopurtell/silver))
 
 (authors "Bohdan Purtell <bohdanpurtell@gmail.com>")
 
@@ -56,9 +56,9 @@
 
 (package
  (name hardcaml_workbench_web)
- (synopsis "Optional browser client for Hardcaml Workbench")
+ (synopsis "Optional browser client for Silver")
  (description
-  "The optional Bonsai Web client and precompiled browser assets for Hardcaml Workbench.")
+  "The optional Bonsai Web client and precompiled browser assets for Silver.")
  (allow_empty)
  (depends
   (ocaml

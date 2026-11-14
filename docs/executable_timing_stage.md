@@ -96,14 +96,14 @@ Close the old client and stop its daemon in their owning terminals when appropri
 Start the daemon:
 
 ```sh
-python3 -B /home/wayne/devel/jane/hardcaml_workbench/scripts/real-asic-example-demo.py daemon \
+python3 -B /home/wayne/devel/jane/silver/scripts/real-asic-example-demo.py daemon \
   --dir /home/wayne/devel/jane/hardcaml_asic_example/.dev/workbench-real-demo
 ```
 
 Then, in another terminal:
 
 ```sh
-python3 -B /home/wayne/devel/jane/hardcaml_workbench/scripts/real-asic-example-demo.py client \
+python3 -B /home/wayne/devel/jane/silver/scripts/real-asic-example-demo.py client \
   --dir /home/wayne/devel/jane/hardcaml_asic_example/.dev/workbench-real-demo
 ```
 

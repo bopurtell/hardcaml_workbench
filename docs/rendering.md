@@ -1,4 +1,4 @@
-# Hardcaml Workbench — Rendering and Interaction
+# Silver — Rendering and Interaction
 
 **2026-10-15 accepted direction:** named workspaces follow shared run contexts by
 default, with independent-context and per-tile reference options (D1/F10). Palette

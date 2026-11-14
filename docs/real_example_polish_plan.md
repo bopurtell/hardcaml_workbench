@@ -24,7 +24,7 @@ commits, pushes, merges or resets.
 
 ## Safety and resource rules
 
-Main checkout `/home/wayne/devel/jane/hardcaml_workbench`; siblings may receive small
+Main checkout `/home/wayne/devel/jane/silver`; siblings may receive small
 necessary integration/config changes. Preserve live processes/state and canonical
 results. Reference docs and Ches are read-only. Test evidence is private. Keep
 reusable real-demo configuration/provider paths outside volatile `/tmp`.

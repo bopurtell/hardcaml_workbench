@@ -24,14 +24,14 @@ Binary refresh receipt under the example's `.dev/workbench-real-demo/`:
 **Terminal 1:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py daemon
 ```
 
 **Terminal 2:**
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py client
 ```
 

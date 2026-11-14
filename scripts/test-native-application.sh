@@ -429,8 +429,8 @@ wait "$client_one"
 wait "$client_two"
 concurrent_pid="$(metadata_field pid)"
 kill -0 "$concurrent_pid"
-grep -Fq "Hardcaml Workbench" "$work_root/concurrent-1.txt"
-grep -Fq "Hardcaml Workbench" "$work_root/concurrent-2.txt"
+grep -Fq "Silver" "$work_root/concurrent-1.txt"
+grep -Fq "Silver" "$work_root/concurrent-2.txt"
 
 if XDG_RUNTIME_DIR="$explicit_runtime" "$client" --plain --connect http://127.0.0.1:1 \
   >"$work_root/explicit.txt" 2>&1; then

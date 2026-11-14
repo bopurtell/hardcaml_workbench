@@ -329,7 +329,7 @@ let generate_rtl protocol_version target configuration output_dir =
 
 let command =
   Command.basic
-    ~summary:"Hardcaml Workbench fixture project driver"
+    ~summary:"Silver fixture project driver"
     (let%map_open.Command operation = anon ("OPERATION" %: string)
      and protocol_version =
        flag "--protocol-version" (required int) ~doc:"VERSION requested protocol version"

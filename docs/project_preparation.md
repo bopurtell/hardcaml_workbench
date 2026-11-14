@@ -162,7 +162,7 @@ After existing work finishes, close the old client and stop the old daemon norma
 The daemon shell needs the example's installed ASIC SDK to compile current sources:
 
 ```bash
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 source /home/wayne/devel/jane/hardcaml_asic_example/.dev/asic-prepare/current/activate.sh
 export OCAMLPATH="${OCAMLPATH}:/home/wayne/devel/jane/hardcaml_asic_example/.dev/workbench-provider-sdk/lib"
 python3 -B scripts/real-asic-example-demo.py daemon
@@ -171,7 +171,7 @@ python3 -B scripts/real-asic-example-demo.py daemon
 In a second terminal:
 
 ```bash
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 python3 -B scripts/real-asic-example-demo.py client
 ```
 

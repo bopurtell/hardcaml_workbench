@@ -1,4 +1,4 @@
-# Hardcaml Workbench — Architecture
+# Silver — Architecture
 
 Updated 2026-10-16. This is the central product and system design document.
 

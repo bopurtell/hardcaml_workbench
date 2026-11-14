@@ -17,7 +17,7 @@ def source_root():
     # Dune supplies the absolute SOURCE root, independent of sandbox/build-dir.
     # Never infer it by stripping _build (external build dirs need not use it).
     dune_root = os.environ.get("DUNE_SOURCEROOT")
-    candidates = ([Path(dune_root), Path(dune_root) / "hardcaml_workbench"] if dune_root
+    candidates = ([Path(dune_root), Path(dune_root) / "silver"] if dune_root
                   else [Path(__file__).resolve().parents[3]])
     matches = [p.resolve() for p in candidates
                if (p / ".git").exists() and (p / "test/integration/pyramid/runner.py").is_file()

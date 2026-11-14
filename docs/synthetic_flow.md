@@ -21,7 +21,7 @@ use `scripts/with-switch.sh`, respecting `OPAM_SWITCH` (default `5.2.0+ox`).
 ### Terminal 1 — prepare once and start the daemon
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 ./scripts/with-switch.sh dune build -j 2 \
   daemon/main.exe terminal/main.exe terminal/workspaces/export_presets.exe
 
@@ -40,7 +40,7 @@ in the demo's discovery file; it has its own state directory.
 ### Terminal 2 — populate the daemon and connect
 
 ```sh
-cd /home/wayne/devel/jane/hardcaml_workbench
+cd /home/wayne/devel/jane/silver
 
 python3 -B scripts/synthetic-flow-demo.py seed \
   --dir "$HOME/.local/state/hardcaml-workbench/synthetic-composition"
